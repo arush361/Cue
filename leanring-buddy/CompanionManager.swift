@@ -719,13 +719,27 @@ final class CompanionManager: ObservableObject {
                     userPrompt: transcript,
                     onTextChunk: { [weak self] chunk in
                         // Feed the streamed chunk to the response side panel,
-                        // strip the [POINT:...] tag on the fly so the user
-                        // doesn't see "[POINT:392,418:Submit button:screen1]"
-                        // mid-response. The final spokenText is re-derived
-                        // from fullResponseText below; this is display-only.
+                        // BUT strip any partial "[POINT..." tag on the fly
+                        // so the user never sees the raw coordinate tag
+                        // appear briefly before being cleaned at the end.
+                        // The full unmodified response (with tag) is still
+                        // captured by fullResponseText and used for parsing
+                        // coordinates below — only the display copy is
+                        // sanitized here.
                         Task { @MainActor in
                             guard let self else { return }
                             self.streamingResponseText += chunk
+                            // Hide the tag as soon as the opening bracket
+                            // sequence appears. We match "[POINT" loosely
+                            // because the SSE chunk boundaries can split
+                            // it mid-word; truncating at the first occurrence
+                            // is a no-op for responses that never contain
+                            // the tag, and a clean cut for ones that do.
+                            if let pointTagStartRange = self.streamingResponseText.range(of: "[POINT") {
+                                self.streamingResponseText = String(
+                                    self.streamingResponseText[..<pointTagStartRange.lowerBound]
+                                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                            }
                             if self.showResponseSidePanelPreference {
                                 self.isResponsePanelVisible = true
                             }

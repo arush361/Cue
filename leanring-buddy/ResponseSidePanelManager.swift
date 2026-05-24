@@ -60,10 +60,12 @@ final class ResponseSidePanelManager {
     nonisolated private static let panelTopBottomTotalMarginInPoints: CGFloat = 24
 
     /// Fraction of the visible-frame height the panel is allowed to grow
-    /// into. 0.5 = roughly the vertical midpoint of the screen. Anything
-    /// taller than that capacity scrolls inside the SwiftUI ScrollView
-    /// instead of pushing the panel further down the screen.
-    nonisolated private static let maximumPanelHeightAsFractionOfScreen: CGFloat = 0.5
+    /// into. 0.7 = past the vertical midpoint, leaving the bottom third
+    /// of the screen visible. Anything taller than that capacity scrolls
+    /// inside the SwiftUI ScrollView instead of pushing the panel
+    /// further down the screen. Bumped from 0.5 to 0.7 (a ~40% increase
+    /// in maximum height) for more reading room on long responses.
+    nonisolated private static let maximumPanelHeightAsFractionOfScreen: CGFloat = 0.7
 
     private let companionManager: CompanionManager
     private var floatingResponsePanel: NSPanel?
