@@ -799,29 +799,31 @@ final class CompanionManager: ObservableObject {
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     enableWebSearch: isWebSearchEnabled,
-                    onTextChunk: { [weak self] chunk in
-                        // Feed the streamed chunk to the response side panel,
-                        // BUT strip any partial "[POINT..." tag on the fly
-                        // so the user never sees the raw coordinate tag
-                        // appear briefly before being cleaned at the end.
-                        // The full unmodified response (with tag) is still
-                        // captured by fullResponseText and used for parsing
-                        // coordinates below — only the display copy is
-                        // sanitized here.
+                    onTextChunk: { [weak self] cumulativeStreamedText in
+                        // IMPORTANT: ClaudeAPI's onTextChunk callback passes
+                        // the FULL accumulated text on every call, not the
+                        // per-chunk delta. So we ASSIGN here, never append —
+                        // otherwise the same text gets concatenated repeatedly
+                        // (e.g. "Hello" → "HelloHello world" → "HelloHello
+                        // worldHello world!") and the user sees a duplicated
+                        // version of the response right up until the final
+                        // cleanup at line `streamingResponseText = spokenText`
+                        // below.
+                        //
+                        // We also strip any partial "[POINT..." tag on the
+                        // fly so the user never sees the raw coordinate tag
+                        // appear during streaming. The full unmodified
+                        // response (with tag) is still captured by
+                        // fullResponseText and used for coordinate parsing
+                        // — only the display copy is sanitized here.
                         Task { @MainActor in
                             guard let self else { return }
-                            self.streamingResponseText += chunk
-                            // Hide the tag as soon as the opening bracket
-                            // sequence appears. We match "[POINT" loosely
-                            // because the SSE chunk boundaries can split
-                            // it mid-word; truncating at the first occurrence
-                            // is a no-op for responses that never contain
-                            // the tag, and a clean cut for ones that do.
-                            if let pointTagStartRange = self.streamingResponseText.range(of: "[POINT") {
-                                self.streamingResponseText = String(
-                                    self.streamingResponseText[..<pointTagStartRange.lowerBound]
-                                ).trimmingCharacters(in: .whitespacesAndNewlines)
+                            var displayText = cumulativeStreamedText
+                            if let pointTagStartRange = displayText.range(of: "[POINT") {
+                                displayText = String(displayText[..<pointTagStartRange.lowerBound])
+                                    .trimmingCharacters(in: .whitespacesAndNewlines)
                             }
+                            self.streamingResponseText = displayText
                             if self.showResponseSidePanelPreference {
                                 self.isResponsePanelVisible = true
                             }
