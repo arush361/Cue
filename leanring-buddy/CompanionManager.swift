@@ -76,10 +76,55 @@ final class CompanionManager: ObservableObject {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
-    /// Fully on-device TTS. No network, no quota. See LocalTTSClient.swift.
+    /// Primary on-device TTS: Kokoro-82M v1.0 via ONNX Runtime. Higher
+    /// quality than AVSpeechSynthesizer but depends on the ONNX Runtime
+    /// Swift package being added to the Xcode target. If the model isn't
+    /// ready (still downloading, or ONNX Runtime not wired up), calls fall
+    /// through to `localTTSClient` automatically. See KokoroTTSClient.swift
+    /// and SETUP_OFFLINE.md.
+    private lazy var kokoroTTSClient: KokoroTTSClient = {
+        return KokoroTTSClient()
+    }()
+
+    /// Fallback TTS using Apple's AVSpeechSynthesizer with the best
+    /// installed system voice. Always available, no dependencies.
+    /// See LocalTTSClient.swift.
     private lazy var localTTSClient: LocalTTSClient = {
         return LocalTTSClient()
     }()
+
+    /// Whether the user's voice responses are currently playing back
+    /// through either TTS engine. Mirrors the old `isPlaying` semantics
+    /// so the transient-cursor logic doesn't change.
+    private var isAnyTTSPlaying: Bool {
+        kokoroTTSClient.isPlaying || localTTSClient.isPlaying
+    }
+
+    /// Speaks `text` through the best available on-device TTS. Prefers
+    /// Kokoro (neural, higher quality) when ready; falls back to the system
+    /// synthesizer (AVSpeechSynthesizer) on any error or while Kokoro is
+    /// still downloading its model on first launch.
+    private func speakResponseThroughBestAvailableTTS(_ text: String) async {
+        if kokoroTTSClient.isReady {
+            do {
+                try await kokoroTTSClient.speakText(text)
+                return
+            } catch {
+                print("⚠️ Kokoro TTS error, falling back to AVSpeechSynthesizer: \(error.localizedDescription)")
+            }
+        }
+        do {
+            try await localTTSClient.speakText(text)
+        } catch {
+            print("⚠️ Local TTS error: \(error.localizedDescription)")
+        }
+    }
+
+    /// Stops any TTS playback from either engine.
+    private func stopAllTTSPlayback() {
+        kokoroTTSClient.stopPlayback()
+        localTTSClient.stopPlayback()
+    }
 
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
@@ -494,7 +539,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            localTTSClient.stopPlayback()
+            stopAllTTSPlayback()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -586,7 +631,7 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
-        localTTSClient.stopPlayback()
+        stopAllTTSPlayback()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -698,12 +743,16 @@ final class CompanionManager: ObservableObject {
 
                 ClickyAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via TTS. Keep the spinner (processing state)
+                // Play the response via on-device TTS. Prefers Kokoro (neural)
+                // when ready, falls back to AVSpeechSynthesizer if Kokoro isn't
+                // initialized yet or fails. Keep the spinner (processing state)
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await localTTSClient.speakText(spokenText)
-                        // speakText returns after player.play() — audio is now playing
+                        await speakResponseThroughBestAvailableTTS(spokenText)
+                        // The TTS path returns after playback has started; if
+                        // neither engine could play, we still flip to .responding
+                        // briefly so the cursor doesn't appear stuck.
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
@@ -735,8 +784,8 @@ final class CompanionManager: ObservableObject {
 
         transientHideTask?.cancel()
         transientHideTask = Task {
-            // Wait for TTS audio to finish playing
-            while localTTSClient.isPlaying {
+            // Wait for TTS audio to finish playing (either engine)
+            while isAnyTTSPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
