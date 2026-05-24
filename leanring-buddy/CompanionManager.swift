@@ -22,7 +22,7 @@ enum CompanionVoiceState {
 }
 
 /// The four cursor colors the user can pick from in the menu bar panel.
-/// `blue` is the historical default that matches the original Clicky
+/// `blue` is the historical default that matches the original upstream-Clicky
 /// look. The other three give the cursor a more personal feel without
 /// drifting off-brand.
 enum CompanionCursorColor: String, CaseIterable {
@@ -231,16 +231,31 @@ final class CompanionManager: ObservableObject {
         claudeAPI.model = model
     }
 
-    /// User preference for whether the Clicky cursor should be shown.
+    /// User preference for whether the Cue cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
-    @Published var isClickyCursorEnabled: Bool = UserDefaults.standard.object(forKey: "isClickyCursorEnabled") == nil
-        ? true
-        : UserDefaults.standard.bool(forKey: "isClickyCursorEnabled")
+    ///
+    /// One-time migration: if the new "isCueCursorEnabled" key is absent
+    /// but the legacy "isCueCursorEnabled" key exists (from earlier
+    /// builds), we read the legacy value so users don't get their setting
+    /// reset by the rename.
+    @Published var isCueCursorEnabled: Bool = {
+        let userDefaults = UserDefaults.standard
+        // New key takes priority.
+        if userDefaults.object(forKey: "isCueCursorEnabled") != nil {
+            return userDefaults.bool(forKey: "isCueCursorEnabled")
+        }
+        // Legacy upstream-Clicky key — read once so existing installs
+        // don't lose their preference after the rename.
+        if userDefaults.object(forKey: "isClickyCursorEnabled") != nil {
+            return userDefaults.bool(forKey: "isClickyCursorEnabled")
+        }
+        return true
+    }()
 
-    func setClickyCursorEnabled(_ enabled: Bool) {
-        isClickyCursorEnabled = enabled
-        UserDefaults.standard.set(enabled, forKey: "isClickyCursorEnabled")
+    func setCueCursorEnabled(_ enabled: Bool) {
+        isCueCursorEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isCueCursorEnabled")
         transientHideTask?.cancel()
         transientHideTask = nil
 
@@ -297,7 +312,7 @@ final class CompanionManager: ObservableObject {
     /// User-selected cursor color. Drives the blue/purple/green/pink
     /// rendering of the triangle cursor, waveform, spinner, and
     /// element-arrival bubble. Persisted to UserDefaults via its raw
-    /// String value; default is blue (the original Clicky look).
+    /// String value; default is blue (the original upstream-Clicky look).
     @Published var selectedCursorColor: CompanionCursorColor = {
         let storedRawValue = UserDefaults.standard.string(forKey: "selectedCursorColor")
         return storedRawValue.flatMap(CompanionCursorColor.init(rawValue:)) ?? .blue
@@ -363,7 +378,7 @@ final class CompanionManager: ObservableObject {
         // still granted, show the cursor overlay immediately. If permissions
         // were revoked (e.g. signing change), don't show the cursor — the
         // panel will show the permissions UI instead.
-        if hasCompletedOnboarding && allPermissionsGranted && isClickyCursorEnabled {
+        if hasCompletedOnboarding && allPermissionsGranted && isCueCursorEnabled {
             overlayWindowManager.hasShownOverlayBefore = true
             overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
             isOverlayVisible = true
@@ -376,13 +391,13 @@ final class CompanionManager: ObservableObject {
     /// the overlay so the welcome animation and intro video play.
     func triggerOnboarding() {
         // Post notification so the panel manager can dismiss the panel
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+        NotificationCenter.default.post(name: .cueDismissPanel, object: nil)
 
         // Mark onboarding as completed so the Start button won't appear
         // again on future launches — the cursor will auto-show instead
         hasCompletedOnboarding = true
 
-        ClickyAnalytics.trackOnboardingStarted()
+        CueAnalytics.trackOnboardingStarted()
 
         // Play Besaid theme at 60% volume, fade out after 1m 30s
         startOnboardingMusic()
@@ -397,8 +412,8 @@ final class CompanionManager: ObservableObject {
     /// footer link. Same flow as triggerOnboarding but the cursor overlay
     /// is already visible so we just restart the welcome animation and video.
     func replayOnboarding() {
-        NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
-        ClickyAnalytics.trackOnboardingReplayed()
+        NotificationCenter.default.post(name: .cueDismissPanel, object: nil)
+        CueAnalytics.trackOnboardingReplayed()
         startOnboardingMusic()
         // Tear down any existing overlays and recreate with isFirstAppearance = true
         overlayWindowManager.hasShownOverlayBefore = false
@@ -507,13 +522,13 @@ final class CompanionManager: ObservableObject {
 
         // Track individual permission grants as they happen
         if !previouslyHadAccessibility && hasAccessibilityPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "accessibility")
+            CueAnalytics.trackPermissionGranted(permission: "accessibility")
         }
         if !previouslyHadScreenRecording && hasScreenRecordingPermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "screen_recording")
+            CueAnalytics.trackPermissionGranted(permission: "screen_recording")
         }
         if !previouslyHadMicrophone && hasMicrophonePermission {
-            ClickyAnalytics.trackPermissionGranted(permission: "microphone")
+            CueAnalytics.trackPermissionGranted(permission: "microphone")
         }
         // Screen content permission is persisted — once the user has approved the
         // SCShareableContent picker, we don't need to re-check it.
@@ -522,7 +537,7 @@ final class CompanionManager: ObservableObject {
         }
 
         if !previouslyHadAll && allPermissionsGranted {
-            ClickyAnalytics.trackAllPermissionsGranted()
+            CueAnalytics.trackAllPermissionsGranted()
         }
     }
 
@@ -555,10 +570,10 @@ final class CompanionManager: ObservableObject {
                     guard didCapture else { return }
                     hasScreenContentPermission = true
                     UserDefaults.standard.set(true, forKey: "hasScreenContentPermission")
-                    ClickyAnalytics.trackPermissionGranted(permission: "screen_content")
+                    CueAnalytics.trackPermissionGranted(permission: "screen_content")
 
                     // If onboarding was already completed, show the cursor overlay now
-                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isClickyCursorEnabled {
+                    if hasCompletedOnboarding && allPermissionsGranted && !isOverlayVisible && isCueCursorEnabled {
                         overlayWindowManager.hasShownOverlayBefore = true
                         overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                         isOverlayVisible = true
@@ -658,14 +673,14 @@ final class CompanionManager: ObservableObject {
             transientHideTask = nil
 
             // If the cursor is hidden, bring it back transiently for this interaction
-            if !isClickyCursorEnabled && !isOverlayVisible {
+            if !isCueCursorEnabled && !isOverlayVisible {
                 overlayWindowManager.hasShownOverlayBefore = true
                 overlayWindowManager.showOverlay(onScreens: NSScreen.screens, companionManager: self)
                 isOverlayVisible = true
             }
 
             // Dismiss the menu bar panel so it doesn't cover the screen
-            NotificationCenter.default.post(name: .clickyDismissPanel, object: nil)
+            NotificationCenter.default.post(name: .cueDismissPanel, object: nil)
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
@@ -690,7 +705,7 @@ final class CompanionManager: ObservableObject {
             }
     
 
-            ClickyAnalytics.trackPushToTalkStarted()
+            CueAnalytics.trackPushToTalkStarted()
 
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = Task {
@@ -702,7 +717,7 @@ final class CompanionManager: ObservableObject {
                     submitDraftText: { [weak self] finalTranscript in
                         self?.lastTranscript = finalTranscript
                         print("🗣️ Companion received transcript: \(finalTranscript)")
-                        ClickyAnalytics.trackUserMessageSent(transcript: finalTranscript)
+                        CueAnalytics.trackUserMessageSent(transcript: finalTranscript)
                         self?.sendTranscriptToClaudeWithScreenshot(transcript: finalTranscript)
                     }
                 )
@@ -712,7 +727,7 @@ final class CompanionManager: ObservableObject {
             // before the async startPushToTalk had a chance to begin recording.
             // Without this, a quick press-and-release drops the release event and
             // leaves the waveform overlay stuck on screen indefinitely.
-            ClickyAnalytics.trackPushToTalkReleased()
+            CueAnalytics.trackPushToTalkReleased()
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
@@ -890,7 +905,7 @@ final class CompanionManager: ObservableObject {
 
                     detectedElementScreenLocation = globalLocation
                     detectedElementDisplayFrame = displayFrame
-                    ClickyAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
+                    CueAnalytics.trackElementPointed(elementLabel: parseResult.elementLabel)
                     print("🎯 Element pointing: (\(Int(pointCoordinate.x)), \(Int(pointCoordinate.y))) → \"\(parseResult.elementLabel ?? "element")\"")
                 } else {
                     print("🎯 Element pointing: \(parseResult.elementLabel ?? "no element")")
@@ -910,7 +925,7 @@ final class CompanionManager: ObservableObject {
 
                 print("🧠 Conversation history: \(conversationHistory.count) exchanges")
 
-                ClickyAnalytics.trackAIResponseReceived(response: spokenText)
+                CueAnalytics.trackAIResponseReceived(response: spokenText)
 
                 // Play the response via on-device TTS. Prefers Kokoro (neural)
                 // when ready, falls back to AVSpeechSynthesizer if Kokoro isn't
@@ -924,7 +939,7 @@ final class CompanionManager: ObservableObject {
                         // briefly so the cursor doesn't appear stuck.
                         voiceState = .responding
                     } catch {
-                        ClickyAnalytics.trackTTSError(error: error.localizedDescription)
+                        CueAnalytics.trackTTSError(error: error.localizedDescription)
                         print("⚠️ Local TTS error: \(error)")
                         speakResponseErrorFallback(underlyingError: error)
                     }
@@ -932,7 +947,7 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                ClickyAnalytics.trackResponseError(error: error.localizedDescription)
+                CueAnalytics.trackResponseError(error: error.localizedDescription)
                 print("⚠️ Companion response error: \(error)")
                 speakResponseErrorFallback(underlyingError: error)
             }
@@ -944,12 +959,12 @@ final class CompanionManager: ObservableObject {
         }
     }
 
-    /// If the cursor is in transient mode (user toggled "Show Clicky" off),
+    /// If the cursor is in transient mode (user toggled "Show Cue" off),
     /// waits for TTS playback and any pointing animation to finish, then
     /// fades out the overlay after a 1-second pause. Cancelled automatically
     /// if the user starts another push-to-talk interaction.
     private func scheduleTransientHideIfNeeded() {
-        guard !isClickyCursorEnabled && isOverlayVisible else { return }
+        guard !isCueCursorEnabled && isOverlayVisible else { return }
 
         transientHideTask?.cancel()
         transientHideTask = Task {
@@ -1073,13 +1088,13 @@ final class CompanionManager: ObservableObject {
         }
 
         // At 40 seconds into the video, trigger the onboarding demo where
-        // Clicky flies to something interesting on screen and comments on it
+        // Cue flies to something interesting on screen and comments on it
         let demoTriggerTime = CMTime(seconds: 40, preferredTimescale: 600)
         onboardingDemoTimeObserver = player.addBoundaryTimeObserver(
             forTimes: [NSValue(time: demoTriggerTime)],
             queue: .main
         ) { [weak self] in
-            ClickyAnalytics.trackOnboardingDemoTriggered()
+            CueAnalytics.trackOnboardingDemoTriggered()
             self?.performOnboardingDemoInteraction()
         }
 
@@ -1090,7 +1105,7 @@ final class CompanionManager: ObservableObject {
             queue: .main
         ) { [weak self] _ in
             guard let self else { return }
-            ClickyAnalytics.trackOnboardingVideoCompleted()
+            CueAnalytics.trackOnboardingVideoCompleted()
             self.onboardingVideoOpacity = 0.0
             // Wait for the 2s fade-out animation to complete before tearing down
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
