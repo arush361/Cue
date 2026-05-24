@@ -61,13 +61,20 @@ final class ResponseSidePanelManager {
     /// directly against the menu bar or dock.
     nonisolated private static let panelTopBottomTotalMarginInPoints: CGFloat = 24
 
-    /// Fraction of the visible-frame height the panel is allowed to grow
-    /// into. 0.7 = past the vertical midpoint, leaving the bottom third
-    /// of the screen visible. Anything taller than that capacity scrolls
-    /// inside the SwiftUI ScrollView instead of pushing the panel
-    /// further down the screen. Bumped from 0.5 to 0.7 (a ~40% increase
-    /// in maximum height) for more reading room on long responses.
-    nonisolated private static let maximumPanelHeightAsFractionOfScreen: CGFloat = 0.7
+    /// Fraction of the available vertical space (visible-frame height
+    /// minus top/bottom margins) the panel is allowed to grow into.
+    /// 1.0 = the panel can fill the entire space between the menu bar
+    /// and the dock, with the standard edge margin preserved at both
+    /// ends. Anything taller than that scrolls inside the SwiftUI
+    /// ScrollView. Bumped from 0.7 → 1.0 (~100% more reading room)
+    /// based on user feedback that long responses still wanted more
+    /// vertical space.
+    ///
+    /// The cap is applied against `availableHeight = visibleFrame.height
+    /// - panelTopBottomTotalMarginInPoints`, not against the raw visible
+    /// frame, so 1.0 stays safely within the screen even with the dock
+    /// shown.
+    nonisolated private static let maximumPanelHeightAsFractionOfAvailableArea: CGFloat = 1.0
 
     private let companionManager: CompanionManager
     private var floatingResponsePanel: NSPanel?
@@ -228,10 +235,12 @@ final class ResponseSidePanelManager {
     /// active screen. Height grows with the streamed response: panel
     /// opens at ~5 lines (minimumPanelHeightInPoints) and expands as
     /// the SwiftUI content reports a larger ideal size via the
-    /// PreferenceKey callback. The upper bound is roughly mid-page
-    /// (visibleFrame.height * maximumPanelHeightAsFractionOfScreen) so
-    /// the panel never feels overwhelming; longer responses scroll
-    /// inside the SwiftUI ScrollView.
+    /// PreferenceKey callback. The upper bound is the available area
+    /// (visible-frame height minus top/bottom margins) multiplied by
+    /// maximumPanelHeightAsFractionOfAvailableArea — currently 1.0,
+    /// meaning the panel can fill the whole space between the menu
+    /// bar and the dock. Longer responses scroll inside the SwiftUI
+    /// ScrollView.
     ///
     /// AppKit y-origin is the bottom, so anchoring to the top means
     /// `y = maxY - height - margin`.
@@ -241,10 +250,11 @@ final class ResponseSidePanelManager {
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
         let visibleFrame = primaryScreen.visibleFrame
 
-        let maxHeightAtMidPage = visibleFrame.height * Self.maximumPanelHeightAsFractionOfScreen
+        let availableHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let maxAllowedPanelHeight = availableHeight * Self.maximumPanelHeightAsFractionOfAvailableArea
         let clampedTargetHeight = min(
             max(targetHeight, Self.minimumPanelHeightInPoints),
-            maxHeightAtMidPage
+            maxAllowedPanelHeight
         )
 
         return NSRect(
@@ -272,10 +282,11 @@ final class ResponseSidePanelManager {
         }
 
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
-        let maxHeightAtMidPage = primaryScreen.visibleFrame.height * Self.maximumPanelHeightAsFractionOfScreen
+        let availableHeight = primaryScreen.visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let maxAllowedPanelHeight = availableHeight * Self.maximumPanelHeightAsFractionOfAvailableArea
         let clampedHeight = min(
             max(reportedIdealHeight, Self.minimumPanelHeightInPoints),
-            maxHeightAtMidPage
+            maxAllowedPanelHeight
         )
 
         guard abs(clampedHeight - lastAppliedPanelHeight) > 1.0 else { return }
