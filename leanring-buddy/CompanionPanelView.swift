@@ -33,6 +33,16 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
+            // Cursor color picker — placed near the top of the panel so
+            // the user can change the cursor look right after seeing it.
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 14)
+
+                cursorColorPickerRow
+                    .padding(.horizontal, 16)
+            }
+
             if !companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 16)
@@ -560,6 +570,70 @@ struct CompanionPanelView: View {
     }
 
 
+
+    // MARK: - Cursor Color Picker
+
+    /// Four-swatch picker for the cursor color. The currently selected
+    /// swatch gets a white ring + a subtle drop shadow so it reads as
+    /// the active choice. Tapping a swatch persists the new color via
+    /// CompanionManager and updates the live cursor immediately.
+    private var cursorColorPickerRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "paintpalette.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Cursor color")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            HStack(spacing: 8) {
+                ForEach(CompanionCursorColor.allCases, id: \.self) { availableCursorColor in
+                    cursorColorSwatchButton(forCursorColor: availableCursorColor)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func cursorColorSwatchButton(forCursorColor cursorColorOption: CompanionCursorColor) -> some View {
+        let isCurrentlySelected = companionManager.selectedCursorColor == cursorColorOption
+        return Button(action: {
+            companionManager.setSelectedCursorColor(cursorColorOption)
+        }) {
+            Circle()
+                .fill(cursorColorOption.swiftUIColor)
+                .frame(width: 18, height: 18)
+                .overlay(
+                    // Inner highlight ring on the selected swatch — uses
+                    // white so it reads on any cursor color.
+                    Circle()
+                        .stroke(Color.white, lineWidth: isCurrentlySelected ? 2 : 0)
+                        .padding(2)
+                )
+                .overlay(
+                    // Outer hairline border so unselected swatches still
+                    // have a definition edge against the dark panel.
+                    Circle()
+                        .stroke(Color.white.opacity(0.18), lineWidth: 0.5)
+                )
+                .shadow(
+                    color: cursorColorOption.swiftUIColor.opacity(isCurrentlySelected ? 0.55 : 0),
+                    radius: isCurrentlySelected ? 5 : 0,
+                    x: 0, y: 0
+                )
+                .scaleEffect(isCurrentlySelected ? 1.10 : 1.0)
+                .animation(.spring(response: 0.22, dampingFraction: 0.7), value: isCurrentlySelected)
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .help("\(cursorColorOption.displayName) cursor")
+    }
 
     // MARK: - Web Search Toggle
 
