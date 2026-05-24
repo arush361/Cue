@@ -214,10 +214,14 @@ final class ResponseSidePanelManager {
         return panel
     }
 
-    /// Computes the panel frame anchored to the right edge of the active
-    /// screen. Height defaults to the minimum (~5 lines worth) but the
-    /// caller can pass a larger value once the SwiftUI content has
-    /// reported its measured height.
+    /// Computes the panel frame anchored to the TOP-right corner of the
+    /// active screen. The panel's top edge stays pinned just below the
+    /// menu bar (visibleFrame.maxY - margin); when the content grows,
+    /// the panel extends downward rather than upward, so the header /
+    /// close button stay where the user expects them.
+    ///
+    /// AppKit uses a bottom-left origin coordinate system, so anchoring
+    /// the top is computed as `topY - height`.
     private func computeOnScreenPanelFrame(
         targetHeight: CGFloat = ResponseSidePanelManager.minimumPanelHeightInPoints
     ) -> NSRect {
@@ -227,9 +231,13 @@ final class ResponseSidePanelManager {
         let availableHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
         let clampedTargetHeight = min(max(targetHeight, Self.minimumPanelHeightInPoints), availableHeight)
 
+        // Top-right anchor: x is the right edge minus panel width, y is
+        // the top of visibleFrame minus the panel's height (since AppKit
+        // y-origin is the bottom).
+        let topEdgeMarginInPoints = Self.panelEdgeMarginInPoints
         return NSRect(
             x: visibleFrame.maxX - Self.panelWidthInPoints - Self.panelEdgeMarginInPoints,
-            y: visibleFrame.minY + Self.panelEdgeMarginInPoints,
+            y: visibleFrame.maxY - clampedTargetHeight - topEdgeMarginInPoints,
             width: Self.panelWidthInPoints,
             height: clampedTargetHeight
         )
