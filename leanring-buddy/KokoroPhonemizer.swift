@@ -38,7 +38,7 @@ actor KokoroPhonemizer {
             in: .userDomainMask
         ).first!
         self.cachedDictionaryFileURL = cachesDirectoryURL
-            .appendingPathComponent("Pointer", isDirectory: true)
+            .appendingPathComponent("Cue", isDirectory: true)
             .appendingPathComponent("cmudict.dict")
     }
 

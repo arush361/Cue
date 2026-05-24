@@ -1,8 +1,8 @@
-# Pointer
+# Cue
 
 A macOS menu bar AI companion. Lives in the menu bar (no dock icon), uses push-to-talk to listen, sees your screen, and responds with voice. The blue cursor can fly across your screen and point at things it's referring to.
 
-Pointer is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza, **rebuilt around fully on-device voice**. Speech-to-text runs through WhisperKit, text-to-speech runs through Kokoro-82M v1.0 via ONNX Runtime (with `AVSpeechSynthesizer` as the fallback while Kokoro warms up). The only network call is Claude `/chat`.
+Cue is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza, **rebuilt around fully on-device voice**. Speech-to-text runs through WhisperKit, text-to-speech runs through Kokoro-82M v1.0 via ONNX Runtime (with `AVSpeechSynthesizer` as the fallback while Kokoro warms up). The only network call is Claude `/chat`.
 
 ## Architecture (the short version)
 
@@ -34,7 +34,7 @@ npx wrangler secret put ANTHROPIC_API_KEY
 npx wrangler deploy
 ```
 
-That returns a URL like `https://pointer-proxy.your-subdomain.workers.dev`. Copy it.
+That returns a URL like `https://cue-proxy.your-subdomain.workers.dev`. Copy it.
 
 ### 2. Local Worker dev (optional)
 
@@ -76,12 +76,12 @@ In Xcode: select the `leanring-buddy` scheme → set your signing team under *Si
 
 On first launch:
 - WhisperKit downloads the `openai_whisper-small.en` model (~250MB) to `~/Library/Application Support/com.argmaxinc.whisperkit/`.
-- Kokoro downloads `model_quantized.onnx` (~88MB) and the default voice (`af_heart.bin`, ~520KB) to `~/Library/Caches/Pointer/kokoro/`.
-- The CMU Pronouncing Dictionary downloads (`cmudict.dict`, ~3MB) to `~/Library/Caches/Pointer/`.
+- Kokoro downloads `model_quantized.onnx` (~88MB) and the default voice (`af_heart.bin`, ~520KB) to `~/Library/Caches/Cue/kokoro/`.
+- The CMU Pronouncing Dictionary downloads (`cmudict.dict`, ~3MB) to `~/Library/Caches/Cue/`.
 
 Total first-launch download: about 350MB. Subsequent launches reuse the cache and start instantly. While Kokoro is initializing, the app falls back to `AVSpeechSynthesizer` so it's immediately usable.
 
-Pointer shows up in your menu bar. Click the icon, grant permissions, and you're good.
+Cue shows up in your menu bar. Click the icon, grant permissions, and you're good.
 
 ### Permissions
 
@@ -118,7 +118,7 @@ AGENTS.md                                  # Full architecture doc (CLAUDE.md is
 SETUP_OFFLINE.md                           # One-time Xcode setup walkthrough
 ```
 
-## Note on the Clicky → Pointer rename
+## Note on the Clicky → Cue rename
 
 This fork rebranded user-facing strings (the panel title, Info.plist permission descriptions, system prompts to Claude) but kept the internal Swift identifiers (`isClickyCursorEnabled`, `ClickyAnalytics`, `clickyDismissPanel`, etc.) and the Xcode scheme name (`leanring-buddy`) intact. Touching those would mean editing the `.pbxproj` file, which is fragile. The app works fine; only the runtime branding changes.
 

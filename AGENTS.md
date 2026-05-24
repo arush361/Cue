@@ -1,9 +1,9 @@
-# Pointer - Agent Instructions
+# Cue - Agent Instructions
 
 <!-- This is the single source of truth for all AI coding agents. CLAUDE.md is a symlink to this file. -->
 <!-- AGENTS.md spec: https://github.com/agentsmd/agents.md — supported by Claude Code, Cursor, Copilot, Gemini CLI, and others. -->
 
-> **About this fork:** Pointer is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza. User-facing strings have been rebranded to "Pointer" but internal Swift identifiers (`isClickyCursorEnabled`, `ClickyAnalytics`, `clickyDismissPanel`, etc.) and the Xcode scheme (`leanring-buddy`) kept their original names to avoid `.pbxproj` edits. Architecture is otherwise identical to upstream.
+> **About this fork:** Cue is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza. User-facing strings have been rebranded to "Cue" but internal Swift identifiers (`isClickyCursorEnabled`, `ClickyAnalytics`, `clickyDismissPanel`, etc.) and the Xcode scheme (`leanring-buddy`) kept their original names to avoid `.pbxproj` edits. Architecture is otherwise identical to upstream.
 
 ## Overview
 
@@ -48,7 +48,7 @@ The previous `/tts` and `/transcribe-token` routes are removed. If you're migrat
 
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
-**Transient Cursor Mode**: When "Show Pointer" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+**Transient Cursor Mode**: When "Show Cue" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
 
 **WhisperKit Whole-Utterance Model**: Unlike AssemblyAI's streaming websocket, WhisperKit transcribes complete audio clips, not chunks. The session buffers PCM16 audio while push-to-talk is held, then runs a single `transcribe(audioPath:)` call on key-up. This is fine for short companion utterances (<30s) and avoids the overhead of running encoder passes on every chunk. Model load and warmup happen lazily on first use via a shared `Task<WhisperKit, Error>`.
 
@@ -56,7 +56,7 @@ The previous `/tts` and `/transcribe-token` routes are removed. If you're migrat
 
 **Two-Tier TTS Strategy**: `CompanionManager.speakResponseThroughBestAvailableTTS` tries Kokoro first (`kokoroTTSClient.isReady`). If Kokoro fails or is still downloading its assets on first launch, it falls through to `LocalTTSClient` (AVSpeechSynthesizer). This means the app speaks immediately on first launch (via the system synthesizer) while Kokoro warms up in the background — there's no startup delay visible to the user. `stopAllTTSPlayback()` stops both engines and `isAnyTTSPlaying` reads both, so the transient-cursor scheduler doesn't care which engine is active.
 
-**Kokoro Asset Download**: `KokoroAssetDownloader` lazily fetches `model_quantized.onnx` (~88MB) and the chosen voice file (~520KB) from HuggingFace on first use and caches them in `~/Library/Caches/Pointer/kokoro/`. `KokoroPhonemizer` separately fetches `cmudict.dict` (~3MB) from the cmusphinx repo. All three are cached for subsequent launches.
+**Kokoro Asset Download**: `KokoroAssetDownloader` lazily fetches `model_quantized.onnx` (~88MB) and the chosen voice file (~520KB) from HuggingFace on first use and caches them in `~/Library/Caches/Cue/kokoro/`. `KokoroPhonemizer` separately fetches `cmudict.dict` (~3MB) from the cmusphinx repo. All three are cached for subsequent launches.
 
 **IPA Phonemization Tradeoff**: `KokoroPhonemizer` uses the CMU Pronouncing Dictionary plus an ARPAbet→IPA mapping table. This covers >95% of common English words but is less accurate than upstream's `misaki` phonemizer (rule-based G2P) or `espeak-ng`. For an upgrade, the swap-point is narrow: `KokoroPhonemizer.phonemize(text:) async throws -> String` is the only method `KokoroTTSClient` calls.
 
@@ -84,7 +84,7 @@ The previous `/tts` and `/transcribe-token` routes are removed. If you're migrat
 | `KokoroTTSClient.swift` | ~260 | Primary on-device TTS using Kokoro-82M v1.0 via ONNX Runtime. Public API matches LocalTTSClient (`speakText`, `isPlaying`, `stopPlayback`). Initialization (model download + ONNX session load) starts on creation; reports `isReady = true` when usable. Wrapped in `#if canImport(OnnxRuntimeBindings)`. |
 | `KokoroPhonemizer.swift` | ~210 | Text → IPA phonemes. Lazy-loads CMU Pronouncing Dictionary on first use (downloaded once from cmusphinx GitHub). ARPAbet → IPA via fixed mapping table. Falls back to letter-by-letter pronunciation for unknown words. |
 | `KokoroTokenizer.swift` | ~60 | IPA phoneme string → `[Int64]` token ID sequence for Kokoro's ONNX model. Uses Kokoro's fixed `$;:,.!?…ABC...ɑɐɒ...` vocabulary. Pads boundaries with silence token. |
-| `KokoroAssetDownloader.swift` | ~80 | Downloads and caches Kokoro's ONNX model and per-voice style embeddings on first use. Files live under `~/Library/Caches/Pointer/kokoro/`. |
+| `KokoroAssetDownloader.swift` | ~80 | Downloads and caches Kokoro's ONNX model and per-voice style embeddings on first use. Files live under `~/Library/Caches/Cue/kokoro/`. |
 | `LocalTTSClient.swift` | ~130 | Fallback TTS via `AVSpeechSynthesizer`. Auto-selects best installed English voice (Premium > Enhanced > Default). Used while Kokoro is still downloading on first launch, or if ONNX Runtime isn't wired up. |
 | `ElevenLabsTTSClient.swift` | ~81 | Legacy ElevenLabs TTS client. No longer referenced by CompanionManager. Safe to remove from the Xcode target. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |

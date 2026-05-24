@@ -34,8 +34,8 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
     private var sparkleUpdaterController: SPUStandardUpdaterController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        print("🎯 Pointer: Starting...")
-        print("🎯 Pointer: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
+        print("🎯 Cue: Starting...")
+        print("🎯 Cue: Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown")")
 
         UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 0])
 
@@ -65,9 +65,9 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         if loginItemService.status != .enabled {
             do {
                 try loginItemService.register()
-                print("🎯 Pointer: Registered as login item")
+                print("🎯 Cue: Registered as login item")
             } catch {
-                print("⚠️ Pointer: Failed to register as login item: \(error)")
+                print("⚠️ Cue: Failed to register as login item: \(error)")
             }
         }
     }
@@ -83,7 +83,7 @@ final class CompanionAppDelegate: NSObject, NSApplicationDelegate {
         do {
             try updaterController.updater.start()
         } catch {
-            print("⚠️ Pointer: Sparkle updater failed to start: \(error)")
+            print("⚠️ Cue: Sparkle updater failed to start: \(error)")
         }
     }
 }

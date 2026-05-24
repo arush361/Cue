@@ -8,7 +8,7 @@
 //    - model_quantized.onnx  (~88MB, INT8 quantized for fast Apple Silicon inference)
 //    - voices/<voiceName>.bin (~520KB, per-voice style embedding)
 //
-//  Files are cached in `~/Library/Caches/Pointer/kokoro/`. Subsequent
+//  Files are cached in `~/Library/Caches/Cue/kokoro/`. Subsequent
 //  launches reuse the cache and start instantly.
 //
 //  Source: https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX
@@ -44,7 +44,7 @@ actor KokoroAssetDownloader {
             in: .userDomainMask
         ).first!
         self.kokoroCacheDirectoryURL = cachesDirectoryURL
-            .appendingPathComponent("Pointer", isDirectory: true)
+            .appendingPathComponent("Cue", isDirectory: true)
             .appendingPathComponent("kokoro", isDirectory: true)
     }
 

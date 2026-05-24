@@ -1,6 +1,6 @@
-# Pointer — Fully Offline Voice Setup
+# Cue — Fully Offline Voice Setup
 
-Pointer's voice pipeline runs entirely on-device:
+Cue's voice pipeline runs entirely on-device:
 
 - **STT**: [WhisperKit](https://github.com/argmaxinc/WhisperKit) (CoreML-accelerated Whisper for Apple Silicon)
 - **TTS (primary)**: [Kokoro-82M v1.0](https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX) via [ONNX Runtime Swift](https://github.com/microsoft/onnxruntime-swift-package-manager) (neural TTS, ~88MB quantized model)
@@ -82,8 +82,8 @@ In Xcode: select `leanring-buddy` scheme → set signing team → **Cmd + R**.
 
 On first launch:
 - **WhisperKit** downloads its model (`openai_whisper-small.en`, ~250MB) to `~/Library/Application Support/com.argmaxinc.whisperkit/`.
-- **Kokoro** downloads its model (`model_quantized.onnx`, ~88MB) and the default voice (`af_heart.bin`, ~520KB) to `~/Library/Caches/Pointer/kokoro/`.
-- **CMU dict** downloads (`cmudict.dict`, ~3MB) to `~/Library/Caches/Pointer/`.
+- **Kokoro** downloads its model (`model_quantized.onnx`, ~88MB) and the default voice (`af_heart.bin`, ~520KB) to `~/Library/Caches/Cue/kokoro/`.
+- **CMU dict** downloads (`cmudict.dict`, ~3MB) to `~/Library/Caches/Cue/`.
 
 Total first-launch download: roughly 350MB. Subsequent launches reuse the cache and start instantly.
 
@@ -92,12 +92,12 @@ During the Kokoro download, the app falls back to `AVSpeechSynthesizer`. Once Ko
 Expected console output on first warmed-up launch:
 
 ```
-🎯 Pointer: Starting...
+🎯 Cue: Starting...
 🎙️ Transcription: using WhisperKit (on-device)
 🗣️ KokoroPhonemizer: loaded 134000 word pronunciations
 🎤 KokoroTTS: ready (voice: af_heart, model: model_quantized.onnx)
 🔊 LocalTTS: using voice "Ava (Premium)" (quality: Premium)
-🔑 Pointer start — accessibility: true, ...
+🔑 Cue start — accessibility: true, ...
 ```
 
 If you see `🎙️ Transcription: using Apple Speech` or no `🎤 KokoroTTS: ready` line, the SPM packages aren't fully wired — go back to step 1.
@@ -126,12 +126,12 @@ Full list and voice samples at https://huggingface.co/onnx-community/Kokoro-82M-
 
 ## 8. (Optional) Install premium fallback voices
 
-When Kokoro is still downloading on first launch, Pointer uses `AVSpeechSynthesizer`. The macOS Premium voices sound much better than the default ones:
+When Kokoro is still downloading on first launch, Cue uses `AVSpeechSynthesizer`. The macOS Premium voices sound much better than the default ones:
 
 1. **System Settings → Accessibility → Spoken Content → System Voice → Customize…**
 2. Find an English voice marked **(Premium)** (e.g., "Ava (Premium)", "Evan (Premium)").
 3. Click the download icon. Each premium voice is ~100–200MB.
-4. Restart Pointer.
+4. Restart Cue.
 
 ## 9. Shrink the Cloudflare Worker
 
@@ -157,7 +157,7 @@ The Kokoro pipeline in this project consists of four files:
 | `KokoroTTSClient.swift` | Public entry point. Orchestrates phonemize → tokenize → ONNX inference → audio playback. Public API matches `LocalTTSClient` so callers don't know which engine is active. |
 | `KokoroPhonemizer.swift` | Text → IPA phoneme string. Uses CMU Pronouncing Dictionary (downloaded once on first use) for word-level ARPAbet lookups, converts ARPAbet → IPA via a fixed mapping table, falls back to letter-by-letter pronunciation for unknown words. |
 | `KokoroTokenizer.swift` | IPA phoneme string → `[Int64]` token ID sequence. Pads with leading/trailing silence tokens (ID 0). Vocabulary is Kokoro's fixed `$;:,.!?...ABC...abc...ɑɐɒ...` string. |
-| `KokoroAssetDownloader.swift` | One-time download manager for the ONNX model and voice embedding files. Caches under `~/Library/Caches/Pointer/kokoro/`. |
+| `KokoroAssetDownloader.swift` | One-time download manager for the ONNX model and voice embedding files. Caches under `~/Library/Caches/Cue/kokoro/`. |
 
 The IPA phonemizer in this fork uses CMU dict + ARPAbet→IPA conversion. This covers >95% of common English words but is less accurate than upstream's `misaki` phonemizer (which is rule-based and handles unknown words better) or `espeak-ng`. If you find Kokoro pronouncing things oddly, the fix is usually to swap the phonemizer for a better one rather than to retrain Kokoro. The interface boundary between `KokoroPhonemizer` and `KokoroTTSClient` is narrow — only `phonemize(text:) async throws -> String` is called.
 
