@@ -215,40 +215,66 @@ final class ResponseSidePanelManager {
     }
 
     /// Computes the panel frame anchored to the TOP-right corner of the
-    /// active screen, always at full available height so the panel
-    /// "covers the page" and overflow scrolls inside the SwiftUI body.
+    /// active screen. Height grows with the streamed response: panel
+    /// opens at ~5 lines (minimumPanelHeightInPoints) and expands as
+    /// the SwiftUI content reports a larger ideal size via the
+    /// PreferenceKey callback. Clamped to the visible frame so it
+    /// never exceeds the screen.
     ///
-    /// `targetHeight` is accepted (and ignored) only to preserve the
-    /// existing call sites that pass `lastAppliedPanelHeight` — we
-    /// always return the maximum visible-frame height now.
+    /// AppKit y-origin is the bottom, so anchoring to the top means
+    /// `y = maxY - height - margin`.
     private func computeOnScreenPanelFrame(
         targetHeight: CGFloat = ResponseSidePanelManager.minimumPanelHeightInPoints
     ) -> NSRect {
-        _ = targetHeight  // No longer used; panel is always full height.
-
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
         let visibleFrame = primaryScreen.visibleFrame
 
-        let panelHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let availableHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let clampedTargetHeight = min(
+            max(targetHeight, Self.minimumPanelHeightInPoints),
+            availableHeight
+        )
 
-        // Top-right anchor: x is the right edge minus panel width, y is
-        // the top of visibleFrame minus the panel's height (since AppKit
-        // y-origin is the bottom).
         return NSRect(
             x: visibleFrame.maxX - Self.panelWidthInPoints - Self.panelEdgeMarginInPoints,
-            y: visibleFrame.maxY - panelHeight - Self.panelEdgeMarginInPoints,
+            y: visibleFrame.maxY - clampedTargetHeight - Self.panelEdgeMarginInPoints,
             width: Self.panelWidthInPoints,
-            height: panelHeight
+            height: clampedTargetHeight
         )
     }
 
-    /// Previously resized the panel to match the SwiftUI content's
-    /// measured height. The panel now stays at full visible-frame
-    /// height and the SwiftUI ScrollView handles internal overflow,
-    /// so this is intentionally a no-op. The callback remains wired
-    /// in case we ever want to bring dynamic sizing back.
+    /// Resizes the open panel to match the SwiftUI content's measured
+    /// height. Called every time `ResponseSidePanelView` reports a new
+    /// ideal height via its PreferenceKey. Clamps to the [min, max]
+    /// range and skips updates that don't change the applied height by
+    /// more than 1pt so streaming chunks don't cause rebroadcast jitter.
     private func applyContentHeightChange(_ reportedIdealHeight: CGFloat) {
-        _ = reportedIdealHeight
+        guard isPanelCurrentlyVisible, let panel = floatingResponsePanel else {
+            // Panel isn't visible yet; just remember the height so the
+            // next show animation lands at the right size.
+            lastAppliedPanelHeight = max(
+                reportedIdealHeight,
+                Self.minimumPanelHeightInPoints
+            )
+            return
+        }
+
+        let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
+        let availableHeight = primaryScreen.visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let clampedHeight = min(
+            max(reportedIdealHeight, Self.minimumPanelHeightInPoints),
+            availableHeight
+        )
+
+        guard abs(clampedHeight - lastAppliedPanelHeight) > 1.0 else { return }
+        lastAppliedPanelHeight = clampedHeight
+
+        let newFrame = computeOnScreenPanelFrame(targetHeight: clampedHeight)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(newFrame, display: true)
+        }
     }
 
     // MARK: - Hide

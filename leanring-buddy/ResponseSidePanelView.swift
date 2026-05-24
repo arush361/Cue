@@ -324,14 +324,17 @@ struct ResponseSidePanelView: View {
 
     // MARK: - Background
 
-    /// Near-transparent background: just the system glass material, no
-    /// additional tint. `.ultraThinMaterial` is the most see-through of
-    /// the SwiftUI materials and adapts to the wallpaper underneath, so
-    /// the panel feels almost like a piece of frosted glass floating
-    /// over whatever is on screen.
+    /// Barely-there background: `.ultraThinMaterial` is already the most
+    /// see-through of the SwiftUI presets, and we further drop its
+    /// opacity to ~0.5 so the wallpaper underneath shows through
+    /// strongly. The text on top stays at full opacity, so legibility
+    /// is preserved while the panel itself feels almost like a piece
+    /// of cling-film floating in front of the screen.
     @ViewBuilder
     private var panelBackgroundLayer: some View {
-        Rectangle().fill(.ultraThinMaterial)
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .opacity(0.5)
     }
 
     // MARK: - Copy action
