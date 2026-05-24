@@ -1,5 +1,5 @@
 /**
- * Pointer Proxy Worker
+ * Cue Proxy Worker
  *
  * Proxies chat requests to the Anthropic Messages API so the Anthropic
  * API key never ships in the app binary. Speech-to-text and text-to-speech

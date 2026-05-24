@@ -193,7 +193,7 @@ private final class WhisperKitTranscriptionSession: BuddyStreamingTranscriptionS
             fromPCM16MonoAudio: pcm16AudioData,
             sampleRate: sampleRate
         )
-        let temporaryFileName = "pointer-whisperkit-\(UUID().uuidString).wav"
+        let temporaryFileName = "cue-whisperkit-\(UUID().uuidString).wav"
         let temporaryWAVFileURL = FileManager.default
             .temporaryDirectory
             .appendingPathComponent(temporaryFileName)

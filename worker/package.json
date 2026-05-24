@@ -1,5 +1,5 @@
 {
-  "name": "pointer-proxy",
+  "name": "cue-proxy",
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
