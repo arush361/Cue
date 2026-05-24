@@ -96,7 +96,11 @@ final class CompanionManager: ObservableObject {
     /// Whether the user's voice responses are currently playing back
     /// through either TTS engine. Mirrors the old `isPlaying` semantics
     /// so the transient-cursor logic doesn't change.
-    private var isAnyTTSPlaying: Bool {
+    /// True while EITHER on-device TTS engine is currently playing audio
+    /// (Kokoro or the AVSpeechSynthesizer fallback). Exposed package-wide
+    /// so the response side panel can observe TTS completion without
+    /// needing direct references to both clients.
+    var isAnyTTSPlaying: Bool {
         kokoroTTSClient.isPlaying || localTTSClient.isPlaying
     }
 
@@ -182,6 +186,32 @@ final class CompanionManager: ObservableObject {
         } else {
             overlayWindowManager.hideOverlay()
             isOverlayVisible = false
+        }
+    }
+
+    /// Live-streamed Claude response text. Updated chunk-by-chunk as the SSE
+    /// stream from `/chat` arrives. Drives the right-side response panel
+    /// (ResponseSidePanelView) so the user can read along while Cue speaks.
+    /// Reset to empty on each new push-to-talk.
+    @Published var streamingResponseText: String = ""
+
+    /// Whether the right-side response panel should be visible right now.
+    /// Owned by CompanionManager so any view can observe it; the actual
+    /// NSPanel lifecycle is in ResponseSidePanelManager.
+    @Published var isResponsePanelVisible: Bool = false
+
+    /// User preference for whether the response side panel should appear
+    /// at all. When false, Cue still speaks responses but no panel is shown.
+    /// Persisted to UserDefaults.
+    @Published var showResponseSidePanelPreference: Bool =
+        UserDefaults.standard.object(forKey: "showResponseSidePanel") as? Bool ?? true
+
+    func setShowResponseSidePanelPreference(_ enabled: Bool) {
+        showResponseSidePanelPreference = enabled
+        UserDefaults.standard.set(enabled, forKey: "showResponseSidePanel")
+        // If the user just turned the panel off while it's showing, hide it.
+        if !enabled {
+            isResponsePanelVisible = false
         }
     }
 
@@ -542,6 +572,12 @@ final class CompanionManager: ObservableObject {
             stopAllTTSPlayback()
             clearDetectedElementLocation()
 
+            // Reset the live-streaming response panel for the new turn.
+            // Hide it now so the slide-out plays before we start the next
+            // response; the new text will pop the panel back in.
+            streamingResponseText = ""
+            isResponsePanelVisible = false
+
             // Dismiss the onboarding prompt if it's showing
             if showOnboardingPrompt {
                 withAnimation(.easeOut(duration: 0.3)) {
@@ -661,8 +697,19 @@ final class CompanionManager: ObservableObject {
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
-                    onTextChunk: { _ in
-                        // No streaming text display — spinner stays until TTS plays
+                    onTextChunk: { [weak self] chunk in
+                        // Feed the streamed chunk to the response side panel,
+                        // strip the [POINT:...] tag on the fly so the user
+                        // doesn't see "[POINT:392,418:Submit button:screen1]"
+                        // mid-response. The final spokenText is re-derived
+                        // from fullResponseText below; this is display-only.
+                        Task { @MainActor in
+                            guard let self else { return }
+                            self.streamingResponseText += chunk
+                            if self.showResponseSidePanelPreference {
+                                self.isResponsePanelVisible = true
+                            }
+                        }
                     }
                 )
 
@@ -671,6 +718,10 @@ final class CompanionManager: ObservableObject {
                 // Parse the [POINT:...] tag from Claude's response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)
                 let spokenText = parseResult.spokenText
+
+                // Replace the live-streamed text with the cleaned spokenText
+                // so the response panel doesn't end with a raw [POINT:...] tag.
+                streamingResponseText = spokenText
 
                 // Handle element pointing if Claude returned coordinates.
                 // Switch to idle BEFORE setting the location so the triangle

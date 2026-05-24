@@ -62,6 +62,14 @@ struct CompanionPanelView: View {
                 Spacer()
                     .frame(height: 16)
 
+                showResponseSidePanelToggleRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 16)
+
                 dmFarzaButton
                     .padding(.horizontal, 16)
             }
@@ -544,6 +552,37 @@ struct CompanionPanelView: View {
     }
 
 
+
+    // MARK: - Show Response Panel Toggle
+
+    /// Lets the user disable the right-edge live-response panel entirely.
+    /// When off, Cue still speaks responses but no panel appears.
+    private var showResponseSidePanelToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "rectangle.righthalf.inset.filled")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Show response panel")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.showResponseSidePanelPreference },
+                set: { companionManager.setShowResponseSidePanelPreference($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
 
     // MARK: - Show Clicky Cursor Toggle
 
