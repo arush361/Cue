@@ -215,64 +215,40 @@ final class ResponseSidePanelManager {
     }
 
     /// Computes the panel frame anchored to the TOP-right corner of the
-    /// active screen. The panel's top edge stays pinned just below the
-    /// menu bar (visibleFrame.maxY - margin); when the content grows,
-    /// the panel extends downward rather than upward, so the header /
-    /// close button stay where the user expects them.
+    /// active screen, always at full available height so the panel
+    /// "covers the page" and overflow scrolls inside the SwiftUI body.
     ///
-    /// AppKit uses a bottom-left origin coordinate system, so anchoring
-    /// the top is computed as `topY - height`.
+    /// `targetHeight` is accepted (and ignored) only to preserve the
+    /// existing call sites that pass `lastAppliedPanelHeight` — we
+    /// always return the maximum visible-frame height now.
     private func computeOnScreenPanelFrame(
         targetHeight: CGFloat = ResponseSidePanelManager.minimumPanelHeightInPoints
     ) -> NSRect {
+        _ = targetHeight  // No longer used; panel is always full height.
+
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
         let visibleFrame = primaryScreen.visibleFrame
 
-        let availableHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
-        let clampedTargetHeight = min(max(targetHeight, Self.minimumPanelHeightInPoints), availableHeight)
+        let panelHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
 
         // Top-right anchor: x is the right edge minus panel width, y is
         // the top of visibleFrame minus the panel's height (since AppKit
         // y-origin is the bottom).
-        let topEdgeMarginInPoints = Self.panelEdgeMarginInPoints
         return NSRect(
             x: visibleFrame.maxX - Self.panelWidthInPoints - Self.panelEdgeMarginInPoints,
-            y: visibleFrame.maxY - clampedTargetHeight - topEdgeMarginInPoints,
+            y: visibleFrame.maxY - panelHeight - Self.panelEdgeMarginInPoints,
             width: Self.panelWidthInPoints,
-            height: clampedTargetHeight
+            height: panelHeight
         )
     }
 
-    /// Resizes the open panel to match the SwiftUI content's measured
-    /// height. Called every time `ResponseSidePanelView` reports a new
-    /// ideal height via its PreferenceKey. Skips updates that don't
-    /// change the applied height by more than 1pt to avoid rebroadcast
-    /// jitter during streaming.
+    /// Previously resized the panel to match the SwiftUI content's
+    /// measured height. The panel now stays at full visible-frame
+    /// height and the SwiftUI ScrollView handles internal overflow,
+    /// so this is intentionally a no-op. The callback remains wired
+    /// in case we ever want to bring dynamic sizing back.
     private func applyContentHeightChange(_ reportedIdealHeight: CGFloat) {
-        guard isPanelCurrentlyVisible, let panel = floatingResponsePanel else {
-            lastAppliedPanelHeight = max(
-                reportedIdealHeight,
-                Self.minimumPanelHeightInPoints
-            )
-            return
-        }
-
-        let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
-        let availableHeight = primaryScreen.visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
-        let clampedHeight = min(
-            max(reportedIdealHeight, Self.minimumPanelHeightInPoints),
-            availableHeight
-        )
-
-        guard abs(clampedHeight - lastAppliedPanelHeight) > 1.0 else { return }
-        lastAppliedPanelHeight = clampedHeight
-
-        let newFrame = computeOnScreenPanelFrame(targetHeight: clampedHeight)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-            panel.animator().setFrame(newFrame, display: true)
-        }
+        _ = reportedIdealHeight
     }
 
     // MARK: - Hide

@@ -39,43 +39,44 @@ struct ResponseSidePanelIdealHeightPreferenceKey: PreferenceKey {
     }
 }
 
-// MARK: - Granola-style palette (scoped to this view)
+// MARK: - Adaptive panel chrome palette (scoped to this view)
 
-/// Color palette for the Granola-look response panel. Kept local to this
-/// file so it doesn't bleed into the dark-themed parts of the app. If we
-/// ever want to apply the same aesthetic to other surfaces, lift these
-/// constants into `DesignSystem.swift` under a `DS.Granola.*` namespace.
+/// Color palette for the response panel. All colors are system-adaptive
+/// so the panel stays legible whether the user is in Light Mode or Dark
+/// Mode and whatever their wallpaper looks like underneath the
+/// `.ultraThinMaterial` glass backing.
+///
+/// Kept under the original `GranolaPaperPalette` name only to minimize
+/// the diff — the Granola cream paper itself was retired so the panel
+/// reads as near-transparent glass over the system blur.
 private enum GranolaPaperPalette {
-    /// Warm off-white "paper" background. Slightly translucent so the
-    /// system glass material peeks through and the panel adapts to the
-    /// user's wallpaper rather than feeling like a flat sticker.
-    static let paperBackground = Color(red: 0.972, green: 0.961, blue: 0.937).opacity(0.92)
+    /// Body / header text. White on dark appearance, black on light.
+    /// Pulls high contrast against the system glass material.
+    static let primaryText = Color.primary
 
-    /// Body text — near-black with a hint of warmth so it doesn't clash
-    /// with the warm paper.
-    static let primaryText = Color(red: 0.117, green: 0.117, blue: 0.117)
+    /// Header title and secondary labels.
+    static let secondaryText = Color.secondary
 
-    /// Secondary text for the header title and labels. Mid-gray.
-    static let secondaryText = Color(red: 0.32, green: 0.32, blue: 0.32)
+    /// Placeholder ("Listening for Claude's response…").
+    static let tertiaryText = Color.secondary.opacity(0.55)
 
-    /// Placeholder text ("Listening for Claude's response…").
-    static let tertiaryText = Color(red: 0.55, green: 0.54, blue: 0.52)
-
-    /// Hairline borders for dividers and button outlines.
-    static let hairlineBorder = Color(red: 0.86, green: 0.84, blue: 0.80)
+    /// Hairline borders for dividers and button outlines. Adapts to
+    /// appearance via Color.primary.
+    static let hairlineBorder = Color.primary.opacity(0.10)
 
     /// Subtle "control" fill behind round buttons (close, mute).
-    static let controlBackground = Color(red: 0.91, green: 0.89, blue: 0.85)
+    static let controlBackground = Color.primary.opacity(0.10)
 
     /// Hover/active state for those controls.
-    static let controlBackgroundActive = Color(red: 0.84, green: 0.82, blue: 0.78)
+    static let controlBackgroundActive = Color.primary.opacity(0.18)
 
     /// Pill-button background for the Copy action.
-    static let pillButtonBackground = Color(red: 0.94, green: 0.92, blue: 0.88)
+    static let pillButtonBackground = Color.primary.opacity(0.08)
 
-    /// Granola-style muted green accent — used for the live-status dot
-    /// and the "Copied!" confirmation chip.
-    static let mutedGreenAccent = Color(red: 0.36, green: 0.55, blue: 0.42)
+    /// Muted green accent — used for the live-status dot and the
+    /// "Copied!" confirmation chip. Same color in both appearances
+    /// because the green works on both light and dark glass backings.
+    static let mutedGreenAccent = Color(red: 0.36, green: 0.65, blue: 0.46)
 }
 
 struct ResponseSidePanelView: View {
@@ -323,17 +324,14 @@ struct ResponseSidePanelView: View {
 
     // MARK: - Background
 
-    /// Granola-style background: warm paper layer with a hint of system
-    /// blur underneath so the panel adapts to the user's wallpaper
-    /// without feeling translucent. The blur layer is `.ultraThinMaterial`
-    /// on all macOS versions; the cream tint is what gives it the paper
-    /// feel.
+    /// Near-transparent background: just the system glass material, no
+    /// additional tint. `.ultraThinMaterial` is the most see-through of
+    /// the SwiftUI materials and adapts to the wallpaper underneath, so
+    /// the panel feels almost like a piece of frosted glass floating
+    /// over whatever is on screen.
     @ViewBuilder
     private var panelBackgroundLayer: some View {
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial)
-            Rectangle().fill(GranolaPaperPalette.paperBackground)
-        }
+        Rectangle().fill(.ultraThinMaterial)
     }
 
     // MARK: - Copy action
