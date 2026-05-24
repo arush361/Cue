@@ -130,6 +130,26 @@ final class CompanionManager: ObservableObject {
         localTTSClient.stopPlayback()
     }
 
+    /// Stops any currently-playing TTS audio. Exposed publicly so the
+    /// response side panel's mute button can silence Cue mid-response.
+    /// Doesn't affect the streamed text on screen — only the audio.
+    func muteCurrentTTSPlayback() {
+        stopAllTTSPlayback()
+    }
+
+    /// Re-speaks the latest assistant response from the beginning. Used
+    /// by the response panel's "unmute" action to play the audio again
+    /// after the user has muted it. No-op if there's no response yet.
+    func replayCurrentResponseTTS() {
+        let textToReplay = streamingResponseText
+        guard !textToReplay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return
+        }
+        // Stop anything in flight so the replay starts cleanly.
+        stopAllTTSPlayback()
+        Task { await speakResponseThroughBestAvailableTTS(textToReplay) }
+    }
+
     /// Conversation history so Claude remembers prior exchanges within a session.
     /// Each entry is the user's transcript and Claude's response.
     private var conversationHistory: [(userTranscript: String, assistantResponse: String)] = []

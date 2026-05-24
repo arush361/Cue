@@ -47,6 +47,18 @@ final class ResponseSidePanelManager {
     /// short enough that the next interaction feels clean.
     private static let autoHideAfterTTSDelaySeconds: TimeInterval = 2.0
 
+    /// Initial / minimum panel height. Tuned to roughly fit the header,
+    /// ~5 lines of body text at the 14pt font size, and the footer — so
+    /// the panel opens compact and only grows as the response streams in.
+    /// `nonisolated` so it can be used as a default-argument value from
+    /// callers that aren't main-actor-isolated.
+    nonisolated private static let minimumPanelHeightInPoints: CGFloat = 220
+
+    /// Extra vertical breathing room subtracted from the screen's visible
+    /// height when computing the max panel size, so the panel never butts
+    /// directly against the menu bar or dock.
+    nonisolated private static let panelTopBottomTotalMarginInPoints: CGFloat = 24
+
     private let companionManager: CompanionManager
     private var floatingResponsePanel: NSPanel?
 
@@ -58,6 +70,11 @@ final class ResponseSidePanelManager {
     /// shown or mid-slide-in). Used to avoid duplicate show animations
     /// when streaming chunks keep arriving.
     private var isPanelCurrentlyVisible: Bool = false
+
+    /// The most recent height we've actually applied to the NSPanel.
+    /// Used to skip redundant resizes when the SwiftUI side reports the
+    /// same height repeatedly during stream updates.
+    private var lastAppliedPanelHeight: CGFloat = ResponseSidePanelManager.minimumPanelHeightInPoints
 
     init(companionManager: CompanionManager) {
         self.companionManager = companionManager
@@ -141,8 +158,10 @@ final class ResponseSidePanelManager {
         let panel = floatingResponsePanel ?? makeNewFloatingResponsePanel()
         floatingResponsePanel = panel
 
-        // Position offscreen to the right, then slide into place.
-        let onScreenFrame = computeOnScreenPanelFrame()
+        // Position offscreen to the right, then slide into place. Use the
+        // last measured content height so a returning panel restores at
+        // whatever size the previous response grew it to.
+        let onScreenFrame = computeOnScreenPanelFrame(targetHeight: lastAppliedPanelHeight)
         var offScreenFrame = onScreenFrame
         offScreenFrame.origin.x = onScreenFrame.origin.x + Self.slideAnimationOffsetInPoints
 
@@ -181,6 +200,11 @@ final class ResponseSidePanelManager {
             companionManager: companionManager,
             onCloseRequested: { [weak self] in
                 self?.companionManager.isResponsePanelVisible = false
+            },
+            onIdealContentHeightChanged: { [weak self] reportedIdealHeight in
+                Task { @MainActor in
+                    self?.applyContentHeightChange(reportedIdealHeight)
+                }
             }
         ))
         hostingView.frame = panel.contentLayoutRect
@@ -190,15 +214,57 @@ final class ResponseSidePanelManager {
         return panel
     }
 
-    private func computeOnScreenPanelFrame() -> NSRect {
+    /// Computes the panel frame anchored to the right edge of the active
+    /// screen. Height defaults to the minimum (~5 lines worth) but the
+    /// caller can pass a larger value once the SwiftUI content has
+    /// reported its measured height.
+    private func computeOnScreenPanelFrame(
+        targetHeight: CGFloat = ResponseSidePanelManager.minimumPanelHeightInPoints
+    ) -> NSRect {
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
         let visibleFrame = primaryScreen.visibleFrame
+
+        let availableHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let clampedTargetHeight = min(max(targetHeight, Self.minimumPanelHeightInPoints), availableHeight)
+
         return NSRect(
             x: visibleFrame.maxX - Self.panelWidthInPoints - Self.panelEdgeMarginInPoints,
             y: visibleFrame.minY + Self.panelEdgeMarginInPoints,
             width: Self.panelWidthInPoints,
-            height: visibleFrame.height - 2 * Self.panelEdgeMarginInPoints
+            height: clampedTargetHeight
         )
+    }
+
+    /// Resizes the open panel to match the SwiftUI content's measured
+    /// height. Called every time `ResponseSidePanelView` reports a new
+    /// ideal height via its PreferenceKey. Skips updates that don't
+    /// change the applied height by more than 1pt to avoid rebroadcast
+    /// jitter during streaming.
+    private func applyContentHeightChange(_ reportedIdealHeight: CGFloat) {
+        guard isPanelCurrentlyVisible, let panel = floatingResponsePanel else {
+            lastAppliedPanelHeight = max(
+                reportedIdealHeight,
+                Self.minimumPanelHeightInPoints
+            )
+            return
+        }
+
+        let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
+        let availableHeight = primaryScreen.visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let clampedHeight = min(
+            max(reportedIdealHeight, Self.minimumPanelHeightInPoints),
+            availableHeight
+        )
+
+        guard abs(clampedHeight - lastAppliedPanelHeight) > 1.0 else { return }
+        lastAppliedPanelHeight = clampedHeight
+
+        let newFrame = computeOnScreenPanelFrame(targetHeight: clampedHeight)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().setFrame(newFrame, display: true)
+        }
     }
 
     // MARK: - Hide
@@ -210,7 +276,7 @@ final class ResponseSidePanelManager {
         guard isPanelCurrentlyVisible, let panel = floatingResponsePanel else { return }
         isPanelCurrentlyVisible = false
 
-        let onScreenFrame = computeOnScreenPanelFrame()
+        let onScreenFrame = computeOnScreenPanelFrame(targetHeight: lastAppliedPanelHeight)
         var offScreenFrame = onScreenFrame
         offScreenFrame.origin.x = onScreenFrame.origin.x + Self.slideAnimationOffsetInPoints
 
@@ -219,8 +285,15 @@ final class ResponseSidePanelManager {
             context.timingFunction = CAMediaTimingFunction(name: .easeIn)
             panel.animator().setFrame(offScreenFrame, display: true)
             panel.animator().alphaValue = 0
-        }, completionHandler: {
+        }, completionHandler: { [weak self] in
             panel.orderOut(nil)
+            // Reset to compact for the next response so a short reply
+            // doesn't inherit the size of the previous long one.
+            // Hop to the main actor since the completionHandler is
+            // Sendable and lastAppliedPanelHeight is main-actor-isolated.
+            Task { @MainActor in
+                self?.lastAppliedPanelHeight = Self.minimumPanelHeightInPoints
+            }
         })
     }
 }
