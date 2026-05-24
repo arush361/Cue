@@ -190,14 +190,32 @@ struct ResponseSidePanelView: View {
     /// Toggles between "audio is playing / will play" and "audio muted".
     /// First click stops the in-flight TTS. Second click re-speaks the
     /// current response from the beginning.
+    ///
+    /// Rendered as a labeled pill (icon + text) rather than an
+    /// icon-only round button so the action is unambiguous at a glance.
     private var muteToggleButton: some View {
-        granolaRoundControlButton(
-            iconSystemName: isAudioMutedByUser ? "speaker.slash.fill" : "speaker.wave.2.fill",
-            iconWeight: .semibold,
-            iconSize: 11,
-            accessibilityLabel: isAudioMutedByUser ? "Replay audio" : "Mute audio",
-            action: handleMuteToggle
-        )
+        Button(action: handleMuteToggle) {
+            HStack(spacing: 5) {
+                Image(systemName: isAudioMutedByUser ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(isAudioMutedByUser ? "Replay" : "Mute")
+                    .font(.system(size: 11, weight: .semibold))
+            }
+            .foregroundColor(GranolaPaperPalette.primaryText)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(GranolaPaperPalette.controlBackground)
+            )
+            .overlay(
+                Capsule(style: .continuous)
+                    .stroke(GranolaPaperPalette.hairlineBorder, lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .pointerCursor()
+        .help(isAudioMutedByUser ? "Replay the response audio" : "Stop the response audio")
     }
 
     /// Shared Granola-style round-button construction so the mute and

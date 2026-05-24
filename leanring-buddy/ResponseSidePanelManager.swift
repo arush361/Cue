@@ -59,6 +59,12 @@ final class ResponseSidePanelManager {
     /// directly against the menu bar or dock.
     nonisolated private static let panelTopBottomTotalMarginInPoints: CGFloat = 24
 
+    /// Fraction of the visible-frame height the panel is allowed to grow
+    /// into. 0.5 = roughly the vertical midpoint of the screen. Anything
+    /// taller than that capacity scrolls inside the SwiftUI ScrollView
+    /// instead of pushing the panel further down the screen.
+    nonisolated private static let maximumPanelHeightAsFractionOfScreen: CGFloat = 0.5
+
     private let companionManager: CompanionManager
     private var floatingResponsePanel: NSPanel?
 
@@ -218,8 +224,10 @@ final class ResponseSidePanelManager {
     /// active screen. Height grows with the streamed response: panel
     /// opens at ~5 lines (minimumPanelHeightInPoints) and expands as
     /// the SwiftUI content reports a larger ideal size via the
-    /// PreferenceKey callback. Clamped to the visible frame so it
-    /// never exceeds the screen.
+    /// PreferenceKey callback. The upper bound is roughly mid-page
+    /// (visibleFrame.height * maximumPanelHeightAsFractionOfScreen) so
+    /// the panel never feels overwhelming; longer responses scroll
+    /// inside the SwiftUI ScrollView.
     ///
     /// AppKit y-origin is the bottom, so anchoring to the top means
     /// `y = maxY - height - margin`.
@@ -229,10 +237,10 @@ final class ResponseSidePanelManager {
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
         let visibleFrame = primaryScreen.visibleFrame
 
-        let availableHeight = visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let maxHeightAtMidPage = visibleFrame.height * Self.maximumPanelHeightAsFractionOfScreen
         let clampedTargetHeight = min(
             max(targetHeight, Self.minimumPanelHeightInPoints),
-            availableHeight
+            maxHeightAtMidPage
         )
 
         return NSRect(
@@ -245,7 +253,7 @@ final class ResponseSidePanelManager {
 
     /// Resizes the open panel to match the SwiftUI content's measured
     /// height. Called every time `ResponseSidePanelView` reports a new
-    /// ideal height via its PreferenceKey. Clamps to the [min, max]
+    /// ideal height via its PreferenceKey. Clamps to the [min, mid-page]
     /// range and skips updates that don't change the applied height by
     /// more than 1pt so streaming chunks don't cause rebroadcast jitter.
     private func applyContentHeightChange(_ reportedIdealHeight: CGFloat) {
@@ -260,10 +268,10 @@ final class ResponseSidePanelManager {
         }
 
         let primaryScreen = NSScreen.main ?? NSScreen.screens.first!
-        let availableHeight = primaryScreen.visibleFrame.height - Self.panelTopBottomTotalMarginInPoints
+        let maxHeightAtMidPage = primaryScreen.visibleFrame.height * Self.maximumPanelHeightAsFractionOfScreen
         let clampedHeight = min(
             max(reportedIdealHeight, Self.minimumPanelHeightInPoints),
-            availableHeight
+            maxHeightAtMidPage
         )
 
         guard abs(clampedHeight - lastAppliedPanelHeight) > 1.0 else { return }
