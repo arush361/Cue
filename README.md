@@ -4,6 +4,8 @@ A macOS menu bar AI companion. Lives in the menu bar (no dock icon), uses push-t
 
 Cue is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza, **rebuilt around fully on-device voice**. Speech-to-text runs through WhisperKit, text-to-speech runs through Kokoro-82M v1.0 via ONNX Runtime (with `AVSpeechSynthesizer` as the fallback while Kokoro warms up). The only network call is Claude `/chat`.
 
+Cue can also **search the web** for current information when you ask about news, weather, sports, recent events, or anything time-sensitive. Claude's built-in `web_search_20250305` tool runs server-side, so no extra API keys or services are needed — just Anthropic's standard per-search pricing. Toggleable from the menu bar panel (defaults to on, capped at 3 searches per response).
+
 ## Architecture (the short version)
 
 Menu bar app (no dock icon) with two `NSPanel` windows: one is the control panel dropdown, the other is the full-screen transparent cursor overlay. Push-to-talk buffers audio locally, runs WhisperKit transcription on key-up, then sends the transcript + screenshot to Claude via streaming SSE. The response is spoken locally via Kokoro-82M v1.0 (neural TTS, ~88MB ONNX model) once it finishes downloading; until then, `AVSpeechSynthesizer` covers playback. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
