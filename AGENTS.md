@@ -3,7 +3,7 @@
 <!-- This is the single source of truth for all AI coding agents. CLAUDE.md is a symlink to this file. -->
 <!-- AGENTS.md spec: https://github.com/agentsmd/agents.md — supported by Claude Code, Cursor, Copilot, Gemini CLI, and others. -->
 
-> **About this fork:** Cue is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza. User-facing strings have been rebranded to "Cue" but internal Swift identifiers (`isClickyCursorEnabled`, `ClickyAnalytics`, `clickyDismissPanel`, etc.) and the Xcode scheme (`leanring-buddy`) kept their original names to avoid `.pbxproj` edits. Architecture is otherwise identical to upstream.
+> **About this fork:** Cue is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza. User-facing strings AND internal Swift identifiers are all rebranded to Cue (`isCueCursorEnabled`, `CueAnalytics`, `cueDismissPanel`, `makeCueMenuBarIcon`). The Xcode build product is `Cue.app` with `PRODUCT_NAME = Cue`. The only upstream-Clicky leftover is the source folder + scheme name `leanring-buddy`, which is never end-user-visible. Architecture is otherwise identical to upstream.
 
 ## Overview
 
@@ -23,7 +23,7 @@ Voice runs fully offline. The only network call is Claude `/chat` through the Cl
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
 - **Concurrency**: `@MainActor` isolation, async/await throughout
-- **Analytics**: PostHog via `ClickyAnalytics.swift`
+- **Analytics**: PostHog via `CueAnalytics.swift`
 
 ### API Proxy (Cloudflare Worker)
 
@@ -89,7 +89,7 @@ The previous `/tts` and `/transcribe-token` routes are removed. If you're migrat
 | `ElevenLabsTTSClient.swift` | ~81 | Legacy ElevenLabs TTS client. No longer referenced by CompanionManager. Safe to remove from the Xcode target. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
-| `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
+| `CueAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
 | `worker/src/index.ts` | ~70 | Cloudflare Worker proxy. Single route: `/chat` (Claude). TTS and STT both moved on-device. |

@@ -157,7 +157,11 @@ SETUP_OFFLINE.md                           # One-time Xcode setup walkthrough
 
 ## Note on the Clicky → Cue rename
 
-This fork rebranded user-facing strings (the panel title, Info.plist permission descriptions, system prompts to Claude) but kept the internal Swift identifiers (`isClickyCursorEnabled`, `ClickyAnalytics`, `clickyDismissPanel`, etc.) and the Xcode scheme name (`leanring-buddy`) intact. Touching those would mean editing the `.pbxproj` file, which is fragile. The app works fine; only the runtime branding changes.
+This fork rebranded everything — user-facing strings (panel title, Info.plist permission descriptions, system prompts to Claude, app display name) AND the internal Swift identifiers (`isCueCursorEnabled`, `CueAnalytics`, `cueDismissPanel`, `makeCueMenuBarIcon`, etc.) AND the Xcode build product (`Cue.app`, `PRODUCT_NAME = Cue`).
+
+The only thing intentionally kept from the upstream Clicky repo is the Xcode **scheme** name (`leanring-buddy`) and source folder (`leanring-buddy/`). Renaming those would touch the `.pbxproj` deeply enough to risk breaking the build, and they're never visible to end users — only to developers in Xcode's scheme picker.
+
+UserDefaults migration: the old `isClickyCursorEnabled` preference key is auto-migrated to the new `isCueCursorEnabled` on first launch so existing users don't lose their setting.
 
 ## License
 

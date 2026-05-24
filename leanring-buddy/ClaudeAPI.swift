@@ -37,7 +37,7 @@ class ClaudeAPI {
         )
     }
 
-    /// Proxy-mode initializer (the original Clicky path). The Worker at
+    /// Proxy-mode initializer (the original upstream-Clicky path). The Worker at
     /// `proxyURL` is expected to inject the actual Anthropic key on its
     /// end, so we don't carry one here.
     convenience init(proxyURL: String, model: String = "claude-sonnet-4-6") {
