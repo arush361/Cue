@@ -68,11 +68,22 @@ final class CompanionManager: ObservableObject {
     // Response text is now displayed inline on the cursor overlay via
     // streamingResponseText, so no separate response overlay manager is needed.
 
-    /// Base URL for the Cloudflare Worker proxy. All API requests route
-    /// through this so keys never ship in the app binary.
+    /// Base URL for the Cloudflare Worker proxy. Used only as a fallback
+    /// when ANTHROPIC_API_KEY isn't provided via environment variable.
+    /// See README "Setup" section for both paths.
     private static let workerBaseURL = "http://localhost:8787"
 
+    /// Claude API client. Prefers direct-to-Anthropic when ANTHROPIC_API_KEY
+    /// is in the process environment (set via Xcode scheme → Run →
+    /// Arguments → Environment Variables, so it never gets bundled).
+    /// Falls back to the Cloudflare Worker proxy when the env var is empty.
     private lazy var claudeAPI: ClaudeAPI = {
+        if let anthropicAPIKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
+           !anthropicAPIKey.isEmpty {
+            print("🌐 Claude API: direct mode (env var ANTHROPIC_API_KEY)")
+            return ClaudeAPI(directAnthropicAPIKey: anthropicAPIKey, model: selectedModel)
+        }
+        print("🌐 Claude API: proxy mode (fallback to \(Self.workerBaseURL))")
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
