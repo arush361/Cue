@@ -31,6 +31,7 @@ protocol BuddyTranscriptionProvider {
 
 enum BuddyTranscriptionProviderFactory {
     private enum PreferredProvider: String {
+        case whisperKit = "whisperkit"
         case assemblyAI = "assemblyai"
         case openAI = "openai"
         case appleSpeech = "apple"
@@ -48,10 +49,25 @@ enum BuddyTranscriptionProviderFactory {
             .lowercased()
         let preferredProvider = preferredProviderRawValue.flatMap(PreferredProvider.init(rawValue:))
 
+        let whisperKitProvider = WhisperKitTranscriptionProvider()
         let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
         let openAIProvider = OpenAIAudioTranscriptionProvider()
 
         if preferredProvider == .appleSpeech {
+            return AppleSpeechTranscriptionProvider()
+        }
+
+        if preferredProvider == .whisperKit {
+            if whisperKitProvider.isConfigured {
+                return whisperKitProvider
+            }
+
+            print("⚠️ Transcription: WhisperKit preferred but not available, falling back")
+            if let unavailableExplanation = whisperKitProvider.unavailableExplanation {
+                print("⚠️ Transcription: \(unavailableExplanation)")
+            }
+
+            print("⚠️ Transcription: using Apple Speech as fallback")
             return AppleSpeechTranscriptionProvider()
         }
 
@@ -85,6 +101,13 @@ enum BuddyTranscriptionProviderFactory {
 
             print("⚠️ Transcription: using Apple Speech as fallback")
             return AppleSpeechTranscriptionProvider()
+        }
+
+        // No preference set — prefer WhisperKit if available (fully offline,
+        // no quotas), then fall back to cloud providers if configured, then
+        // Apple Speech as the last resort.
+        if whisperKitProvider.isConfigured {
+            return whisperKitProvider
         }
 
         if assemblyAIProvider.isConfigured {

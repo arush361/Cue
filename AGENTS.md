@@ -7,9 +7,9 @@
 
 ## Overview
 
-macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it via AssemblyAI streaming, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and voice (ElevenLabs TTS). A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
+macOS menu bar companion app. Lives entirely in the macOS status bar (no dock icon, no main window). Clicking the menu bar icon opens a custom floating panel with companion voice controls. Uses push-to-talk (ctrl+option) to capture voice input, transcribes it on-device via WhisperKit, and sends the transcript + a screenshot of the user's screen to Claude. Claude responds with text (streamed via SSE) and the response is spoken aloud on-device via `AVSpeechSynthesizer`. A blue cursor overlay can fly to and point at UI elements Claude references on any connected monitor.
 
-All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in the app.
+Voice runs fully offline. The only network call is Claude `/chat` through the Cloudflare Worker. No AssemblyAI, no ElevenLabs, no per-character quotas. See `SETUP_OFFLINE.md` for the one-time Xcode wiring (add the WhisperKit SPM package, add the new source files to the target).
 
 ## Architecture
 
@@ -17,8 +17,8 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 - **Framework**: SwiftUI (macOS native) with AppKit bridging for menu bar panel and cursor overlay
 - **Pattern**: MVVM with `@StateObject` / `@Published` state management
 - **AI Chat**: Claude (Sonnet 4.6 default, Opus 4.6 optional) via Cloudflare Worker proxy with SSE streaming
-- **Speech-to-Text**: AssemblyAI real-time streaming (`u3-rt-pro` model) via websocket, with OpenAI and Apple Speech as fallbacks
-- **Text-to-Speech**: ElevenLabs (`eleven_flash_v2_5` model) via Cloudflare Worker proxy
+- **Speech-to-Text**: WhisperKit (`openai_whisper-small.en` model, CoreML-accelerated, on-device). Cloud providers (AssemblyAI, OpenAI) and Apple Speech remain as fallback options if the user flips `VoiceTranscriptionProvider` in Info.plist.
+- **Text-to-Speech**: `AVSpeechSynthesizer` on-device, auto-selecting the highest-quality English voice (Premium > Enhanced > Default). See `LocalTTSClient.swift`.
 - **Screen Capture**: ScreenCaptureKit (macOS 14.2+), multi-monitor support
 - **Voice Input**: Push-to-talk via `AVAudioEngine` + pluggable transcription-provider layer. System-wide keyboard shortcut via listen-only CGEvent tap.
 - **Element Pointing**: Claude embeds `[POINT:x,y:label:screenN]` tags in responses. The overlay parses these, maps coordinates to the correct monitor, and animates the blue cursor along a bezier arc to the target.
@@ -27,16 +27,16 @@ All API keys live on a Cloudflare Worker proxy — nothing sensitive ships in th
 
 ### API Proxy (Cloudflare Worker)
 
-The app never calls external APIs directly. All requests go through a Cloudflare Worker (`worker/src/index.ts`) that holds the real API keys as secrets.
+The app's only network dependency (besides PostHog analytics and the optional onboarding video) is Claude. The worker (`worker/src/index.ts`) holds the Anthropic key as a secret and proxies the chat endpoint.
 
 | Route | Upstream | Purpose |
 |-------|----------|---------|
 | `POST /chat` | `api.anthropic.com/v1/messages` | Claude vision + streaming chat |
-| `POST /tts` | `api.elevenlabs.io/v1/text-to-speech/{voiceId}` | ElevenLabs TTS audio |
-| `POST /transcribe-token` | `streaming.assemblyai.com/v3/token` | Fetches a short-lived (480s) AssemblyAI websocket token |
 
-Worker secrets: `ANTHROPIC_API_KEY`, `ASSEMBLYAI_API_KEY`, `ELEVENLABS_API_KEY`
-Worker vars: `ELEVENLABS_VOICE_ID`
+Worker secrets: `ANTHROPIC_API_KEY`
+Worker vars: (none)
+
+The previous `/tts` and `/transcribe-token` routes are removed. If you're migrating from the upstream Clicky worker, delete the unused secrets with `npx wrangler secret delete ASSEMBLYAI_API_KEY` and `npx wrangler secret delete ELEVENLABS_API_KEY`.
 
 ### Key Architecture Decisions
 
@@ -48,35 +48,41 @@ Worker vars: `ELEVENLABS_VOICE_ID`
 
 **Shared URLSession for AssemblyAI**: A single long-lived `URLSession` is shared across all AssemblyAI streaming sessions (owned by the provider, not the session). Creating and invalidating a URLSession per session corrupts the OS connection pool and causes "Socket is not connected" errors after a few rapid reconnections.
 
-**Transient Cursor Mode**: When "Show Clicky" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+**Transient Cursor Mode**: When "Show Pointer" is off, pressing the hotkey fades in the cursor overlay for the duration of the interaction (recording → response → TTS → optional pointing), then fades it out automatically after 1 second of inactivity.
+
+**WhisperKit Whole-Utterance Model**: Unlike AssemblyAI's streaming websocket, WhisperKit transcribes complete audio clips, not chunks. The session buffers PCM16 audio while push-to-talk is held, then runs a single `transcribe(audioPath:)` call on key-up. This is fine for short companion utterances (<30s) and avoids the overhead of running encoder passes on every chunk. Model load and warmup happen lazily on first use via a shared `Task<WhisperKit, Error>`.
+
+**On-Device TTS Picks Best Available Voice**: `LocalTTSClient.findBestAvailableEnglishVoice()` ranks installed voices by `AVSpeechSynthesisVoiceQuality` (Premium > Enhanced > Default) then by locale preference (en-US > en-GB > en-AU > en-IE > en-IN). If the user installs a Premium voice via System Settings → Accessibility → Spoken Content, the app picks it up automatically on next launch. No code changes needed.
 
 ## Key Files
 
 | File | Lines | Purpose |
 |------|-------|---------|
 | `leanring_buddyApp.swift` | ~89 | Menu bar app entry point. Uses `@NSApplicationDelegateAdaptor` with `CompanionAppDelegate` which creates `MenuBarPanelManager` and starts `CompanionManager`. No main window — the app lives entirely in the status bar. |
-| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, ElevenLabs TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
+| `CompanionManager.swift` | ~1026 | Central state machine. Owns dictation, shortcut monitoring, screen capture, Claude API, on-device TTS, and overlay management. Tracks voice state (idle/listening/processing/responding), conversation history, model selection, and cursor visibility. Coordinates the full push-to-talk → screenshot → Claude → TTS → pointing pipeline. |
 | `MenuBarPanelManager.swift` | ~243 | NSStatusItem + custom NSPanel lifecycle. Creates the menu bar icon, manages the floating companion panel (show/hide/position), installs click-outside-to-dismiss monitor. |
 | `CompanionPanelView.swift` | ~761 | SwiftUI panel content for the menu bar dropdown. Shows companion status, push-to-talk instructions, model picker (Sonnet/Opus), permissions UI, DM feedback button, and quit button. Dark aesthetic using `DS` design system. |
 | `OverlayWindow.swift` | ~881 | Full-screen transparent overlay hosting the blue cursor, response text, waveform, and spinner. Handles cursor animation, element pointing with bezier arcs, multi-monitor coordinate mapping, and fade-out transitions. |
 | `CompanionResponseOverlay.swift` | ~217 | SwiftUI view for the response text bubble and waveform displayed next to the cursor in the overlay. |
 | `CompanionScreenCaptureUtility.swift` | ~132 | Multi-monitor screenshot capture using ScreenCaptureKit. Returns labeled image data for each connected display. |
 | `BuddyDictationManager.swift` | ~866 | Push-to-talk voice pipeline. Handles microphone capture via `AVAudioEngine`, provider-aware permission checks, keyboard/button dictation sessions, transcript finalization, shortcut parsing, contextual keyterms, and live audio-level reporting for waveform feedback. |
-| `BuddyTranscriptionProvider.swift` | ~100 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — AssemblyAI, OpenAI, or Apple Speech. |
-| `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Streaming transcription provider. Fetches temp tokens from the Cloudflare Worker, opens an AssemblyAI v3 websocket, streams PCM16 audio, tracks turn-based transcripts, and delivers finalized text on key-up. Shares a single URLSession across all sessions. |
-| `OpenAIAudioTranscriptionProvider.swift` | ~317 | Upload-based transcription provider. Buffers push-to-talk audio locally, uploads as WAV on release, returns finalized transcript. |
-| `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. |
-| `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads for upload-based providers. |
+| `BuddyTranscriptionProvider.swift` | ~120 | Protocol surface and provider factory for voice transcription backends. Resolves provider based on `VoiceTranscriptionProvider` in Info.plist — `whisperkit` (default), `assemblyai`, `openai`, or `apple`. Prefers WhisperKit when available; falls back to Apple Speech otherwise. |
+| `WhisperKitTranscriptionProvider.swift` | ~210 | On-device transcription via WhisperKit (CoreML-accelerated Whisper). Buffers PCM16 audio while push-to-talk is held, writes a temp WAV on key-up, runs a single `transcribe(audioPath:)` call. Wrapped in `#if canImport(WhisperKit)` so the file compiles before the SPM is wired. |
+| `AssemblyAIStreamingTranscriptionProvider.swift` | ~478 | Optional cloud fallback. Streaming transcription via AssemblyAI v3 websocket. Only used if Info.plist selects `assemblyai`. |
+| `OpenAIAudioTranscriptionProvider.swift` | ~317 | Optional cloud fallback. Upload-based transcription via OpenAI. Only used if Info.plist selects `openai`. |
+| `AppleSpeechTranscriptionProvider.swift` | ~147 | Local fallback transcription provider backed by Apple's Speech framework. Used when WhisperKit is unavailable and no cloud provider is configured. |
+| `BuddyAudioConversionSupport.swift` | ~108 | Audio conversion helpers. Converts live mic buffers to PCM16 mono audio and builds WAV payloads. Shared by WhisperKit and OpenAI providers. |
 | `GlobalPushToTalkShortcutMonitor.swift` | ~132 | System-wide push-to-talk monitor. Owns the listen-only `CGEvent` tap and publishes press/release transitions. |
 | `ClaudeAPI.swift` | ~291 | Claude vision API client with streaming (SSE) and non-streaming modes. TLS warmup optimization, image MIME detection, conversation history support. |
-| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. |
-| `ElevenLabsTTSClient.swift` | ~81 | ElevenLabs TTS client. Sends text to the Worker proxy, plays back audio via `AVAudioPlayer`. Exposes `isPlaying` for transient cursor scheduling. |
+| `OpenAIAPI.swift` | ~142 | OpenAI GPT vision API client. Dormant — no caller wires it up. |
+| `LocalTTSClient.swift` | ~130 | On-device TTS via `AVSpeechSynthesizer`. Auto-selects best installed English voice (Premium > Enhanced > Default). Public API matches the old ElevenLabs client (`speakText`, `isPlaying`, `stopPlayback`) so CompanionManager is unchanged. |
+| `ElevenLabsTTSClient.swift` | ~81 | Legacy ElevenLabs TTS client. No longer referenced by CompanionManager. Safe to remove from the Xcode target. |
 | `ElementLocationDetector.swift` | ~335 | Detects UI element locations in screenshots for cursor pointing. |
 | `DesignSystem.swift` | ~880 | Design system tokens — colors, corner radii, shared styles. All UI references `DS.Colors`, `DS.CornerRadius`, etc. |
 | `ClickyAnalytics.swift` | ~121 | PostHog analytics integration for usage tracking. |
 | `WindowPositionManager.swift` | ~262 | Window placement logic, Screen Recording permission flow, and accessibility permission helpers. |
 | `AppBundleConfiguration.swift` | ~28 | Runtime configuration reader for keys stored in the app bundle Info.plist. |
-| `worker/src/index.ts` | ~142 | Cloudflare Worker proxy. Three routes: `/chat` (Claude), `/tts` (ElevenLabs), `/transcribe-token` (AssemblyAI temp token). |
+| `worker/src/index.ts` | ~70 | Cloudflare Worker proxy. Single route: `/chat` (Claude). TTS and STT both moved on-device. |
 
 ## Build & Run
 
