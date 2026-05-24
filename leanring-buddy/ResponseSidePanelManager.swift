@@ -216,6 +216,12 @@ final class ResponseSidePanelManager {
         let hostingView = NSHostingView(rootView: ResponseSidePanelView(
             companionManager: companionManager,
             onCloseRequested: { [weak self] in
+                // Closing the panel via the X button should also stop
+                // any in-flight TTS audio — otherwise the response keeps
+                // being spoken after its visible counterpart is gone,
+                // which is jarring. Mirrors the "panel closes on next
+                // push-to-talk" path which already cancels TTS.
+                self?.companionManager.muteCurrentTTSPlayback()
                 self?.companionManager.isResponsePanelVisible = false
             },
             onIdealContentHeightChanged: { [weak self] reportedIdealHeight in
