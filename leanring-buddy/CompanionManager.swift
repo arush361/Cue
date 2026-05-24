@@ -76,8 +76,9 @@ final class CompanionManager: ObservableObject {
         return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
     }()
 
-    private lazy var elevenLabsTTSClient: ElevenLabsTTSClient = {
-        return ElevenLabsTTSClient(proxyURL: "\(Self.workerBaseURL)/tts")
+    /// Fully on-device TTS. No network, no quota. See LocalTTSClient.swift.
+    private lazy var localTTSClient: LocalTTSClient = {
+        return LocalTTSClient()
     }()
 
     /// Conversation history so Claude remembers prior exchanges within a session.
@@ -493,7 +494,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
-            elevenLabsTTSClient.stopPlayback()
+            localTTSClient.stopPlayback()
             clearDetectedElementLocation()
 
             // Dismiss the onboarding prompt if it's showing
@@ -579,13 +580,13 @@ final class CompanionManager: ObservableObject {
     // MARK: - AI Response Pipeline
 
     /// Captures a screenshot, sends it along with the transcript to Claude,
-    /// and plays the response aloud via ElevenLabs TTS. The cursor stays in
+    /// and plays the response aloud via on-device TTS. The cursor stays in
     /// the spinner/processing state until TTS audio begins playing.
     /// Claude's response may include a [POINT:x,y:label] tag which triggers
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
-        elevenLabsTTSClient.stopPlayback()
+        localTTSClient.stopPlayback()
 
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
@@ -701,12 +702,12 @@ final class CompanionManager: ObservableObject {
                 // until the audio actually starts playing, then switch to responding.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        try await elevenLabsTTSClient.speakText(spokenText)
+                        try await localTTSClient.speakText(spokenText)
                         // speakText returns after player.play() — audio is now playing
                         voiceState = .responding
                     } catch {
                         ClickyAnalytics.trackTTSError(error: error.localizedDescription)
-                        print("⚠️ ElevenLabs TTS error: \(error)")
+                        print("⚠️ Local TTS error: \(error)")
                         speakResponseErrorFallback(underlyingError: error)
                     }
                 }
@@ -735,7 +736,7 @@ final class CompanionManager: ObservableObject {
         transientHideTask?.cancel()
         transientHideTask = Task {
             // Wait for TTS audio to finish playing
-            while elevenLabsTTSClient.isPlaying {
+            while localTTSClient.isPlaying {
                 try? await Task.sleep(nanoseconds: 200_000_000)
                 guard !Task.isCancelled else { return }
             }
@@ -756,8 +757,9 @@ final class CompanionManager: ObservableObject {
     }
 
     /// Speaks a neutral fallback message using macOS system TTS when the
-    /// response pipeline or ElevenLabs playback fails for any reason.
-    /// Uses NSSpeechSynthesizer so it works even when ElevenLabs is down.
+    /// response pipeline or local TTS playback fails for any reason.
+    /// Uses NSSpeechSynthesizer (different from the AVSpeechSynthesizer used
+    /// by LocalTTSClient) so it works even if the main TTS path is wedged.
     /// The underlying error is logged so the real cause (network failure,
     /// missing worker API key, upstream API error, etc.) is visible in the
     /// console instead of being masked by a hardcoded credits message.

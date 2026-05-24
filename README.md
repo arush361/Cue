@@ -2,13 +2,15 @@
 
 A macOS menu bar AI companion. Lives in the menu bar (no dock icon), uses push-to-talk to listen, sees your screen, and responds with voice. The blue cursor can fly across your screen and point at things it's referring to.
 
-Pointer is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza. Same core architecture, rebranded for hacking and extension.
+Pointer is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza, **rebuilt around fully on-device voice**. Speech-to-text runs through WhisperKit, text-to-speech runs through `AVSpeechSynthesizer`. The only network call is Claude `/chat`.
 
 ## Architecture (the short version)
 
-Menu bar app (no dock icon) with two `NSPanel` windows. One is the control panel dropdown, the other is the full-screen transparent cursor overlay. Push-to-talk streams audio over a websocket to AssemblyAI, sends the transcript + screenshot to Claude via streaming SSE, and plays the response through ElevenLabs TTS. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors. All three APIs are proxied through a Cloudflare Worker so no keys ship in the app.
+Menu bar app (no dock icon) with two `NSPanel` windows: one is the control panel dropdown, the other is the full-screen transparent cursor overlay. Push-to-talk buffers audio locally, runs WhisperKit transcription on key-up, then sends the transcript + screenshot to Claude via streaming SSE through a Cloudflare Worker proxy. The response is spoken locally via `AVSpeechSynthesizer` (with auto-selected premium voice if available). Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
 
-For the full technical breakdown, read `AGENTS.md` (also symlinked as `CLAUDE.md`).
+No AssemblyAI, no ElevenLabs, no per-character quotas. Only Anthropic.
+
+For the full technical breakdown, read `AGENTS.md` (also symlinked as `CLAUDE.md`). For the one-time Xcode-side wiring, read `SETUP_OFFLINE.md`.
 
 ## Prerequisites
 
@@ -16,37 +18,19 @@ For the full technical breakdown, read `AGENTS.md` (also symlinked as `CLAUDE.md
 - Xcode 15+
 - Node.js 18+ (for the Cloudflare Worker)
 - A [Cloudflare](https://cloudflare.com) account (free tier works)
-- API keys for: [Anthropic](https://console.anthropic.com), [AssemblyAI](https://www.assemblyai.com), [ElevenLabs](https://elevenlabs.io)
+- An [Anthropic API key](https://console.anthropic.com)
+- Apple Silicon recommended (Intel works but WhisperKit is much slower)
 
 ## Setup
 
 ### 1. Cloudflare Worker
 
-The Worker is a tiny proxy that holds your API keys. The app talks to the Worker; the Worker talks to the APIs. Keys never ship in the binary.
+The Worker is a tiny proxy that holds your Anthropic API key. The app talks to the Worker; the Worker talks to Anthropic. Key never ships in the binary.
 
 ```bash
 cd worker
 npm install
-```
-
-Add your secrets:
-
-```bash
 npx wrangler secret put ANTHROPIC_API_KEY
-npx wrangler secret put ASSEMBLYAI_API_KEY
-npx wrangler secret put ELEVENLABS_API_KEY
-```
-
-Set the ElevenLabs voice ID in `wrangler.toml`:
-
-```toml
-[vars]
-ELEVENLABS_VOICE_ID = "your-voice-id-here"
-```
-
-Deploy:
-
-```bash
 npx wrangler deploy
 ```
 
@@ -61,35 +45,37 @@ cd worker
 npx wrangler dev
 ```
 
-Local server runs at `http://localhost:8787`. Create `worker/.dev.vars` with your keys:
+Local server runs at `http://localhost:8787`. Create `worker/.dev.vars` with:
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
-ASSEMBLYAI_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
 ```
 
 ### 3. Point the app at your Worker
 
-The Worker URL is hardcoded in two places in the Swift code:
+The Worker URL is hardcoded in:
 
 - `leanring-buddy/CompanionManager.swift` (constant `workerBaseURL`)
-- `leanring-buddy/AssemblyAIStreamingTranscriptionProvider.swift` (constant `tokenProxyURL`)
+- `leanring-buddy/AssemblyAIStreamingTranscriptionProvider.swift` (constant `tokenProxyURL`, unused after Path A but still references the URL)
 
-Both currently default to `http://localhost:8787`. For production, replace with your deployed Worker URL.
+Default is `http://localhost:8787`. For production, replace with your deployed Worker URL.
 
-### 4. Open in Xcode and run
+### 4. Wire up WhisperKit and the new source files in Xcode
 
-```bash
-open leanring-buddy.xcodeproj
-```
+This is the only step that can't be automated from the terminal because it requires Xcode UI. The full walkthrough is in **[SETUP_OFFLINE.md](./SETUP_OFFLINE.md)**. Short version:
 
-1. Select the `leanring-buddy` scheme (the typo is legacy from the original Clicky repo; renaming it would touch the `.pbxproj` and risk breaking the build)
-2. Set your signing team under *Signing & Capabilities*
-3. Hit **Cmd + R**
+1. Open `leanring-buddy.xcodeproj`.
+2. **File → Add Package Dependencies…** → paste `https://github.com/argmaxinc/WhisperKit` → add to the `leanring-buddy` target.
+3. In the Project Navigator, right-click the `leanring-buddy` group → **Add Files to "leanring-buddy"…** → select both `WhisperKitTranscriptionProvider.swift` and `LocalTTSClient.swift` → make sure the `leanring-buddy` target is ticked → **Add**.
+4. (Optional, for best voice quality) **System Settings → Accessibility → Spoken Content → System Voice → Customize…** → download a Premium English voice (e.g., "Ava (Premium)").
 
-Pointer shows up in your menu bar (no dock icon). Click the icon to open the panel, grant permissions, and you're good.
+### 5. Build & run
+
+In Xcode: select the `leanring-buddy` scheme → set your signing team under *Signing & Capabilities* → **Cmd + R**.
+
+On first launch, WhisperKit downloads the `openai_whisper-small.en` model (~250MB) to `~/Library/Application Support/com.argmaxinc.whisperkit/` and warms it up. Subsequent launches reuse the cache and start instantly.
+
+Pointer shows up in your menu bar. Click the icon, grant permissions, and you're good.
 
 ### Permissions
 
@@ -98,6 +84,8 @@ Pointer shows up in your menu bar (no dock icon). Click the icon to open the pan
 - **Screen Recording** for screenshot capture
 - **Screen Content** for ScreenCaptureKit access
 
+(No Speech Recognition permission needed — WhisperKit doesn't use Apple's Speech framework.)
+
 ## Don't run `xcodebuild` from the terminal
 
 It invalidates TCC (Transparency, Consent, and Control) permissions and the app has to re-request screen recording, accessibility, etc. The only sanctioned `xcodebuild` usage is via `scripts/release.sh` for releases.
@@ -105,17 +93,19 @@ It invalidates TCC (Transparency, Consent, and Control) permissions and the app 
 ## Project structure
 
 ```
-leanring-buddy/          # Swift source (scheme name kept for compatibility)
-  CompanionManager.swift    # Central state machine
-  CompanionPanelView.swift  # Menu bar panel UI
-  ClaudeAPI.swift           # Claude streaming client
-  ElevenLabsTTSClient.swift # Text-to-speech playback
-  OverlayWindow.swift       # Blue cursor overlay
-  AssemblyAI*.swift         # Real-time transcription
-  BuddyDictation*.swift     # Push-to-talk pipeline
-worker/                  # Cloudflare Worker proxy
-  src/index.ts              # Three routes: /chat, /tts, /transcribe-token
-AGENTS.md                # Full architecture doc (CLAUDE.md is a symlink to this)
+leanring-buddy/                            # Swift source (scheme name kept for compatibility)
+  CompanionManager.swift                      # Central state machine
+  CompanionPanelView.swift                    # Menu bar panel UI
+  ClaudeAPI.swift                             # Claude streaming client
+  LocalTTSClient.swift                        # On-device TTS (AVSpeechSynthesizer)
+  WhisperKitTranscriptionProvider.swift       # On-device STT (WhisperKit)
+  OverlayWindow.swift                         # Blue cursor overlay
+  BuddyDictation*.swift                       # Push-to-talk pipeline
+  AssemblyAI*.swift, OpenAI*.swift, Apple*.swift  # Optional cloud / Apple-Speech fallbacks
+worker/                                    # Cloudflare Worker proxy
+  src/index.ts                                # Single route: /chat
+AGENTS.md                                  # Full architecture doc (CLAUDE.md is a symlink)
+SETUP_OFFLINE.md                           # One-time Xcode setup walkthrough
 ```
 
 ## Note on the Clicky → Pointer rename

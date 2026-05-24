@@ -2,5 +2,7 @@ name = "pointer-proxy"
 main = "src/index.ts"
 compatibility_date = "2024-01-01"
 
-[vars]
-ELEVENLABS_VOICE_ID = "kPzsL2i3teMYv0FxEYQ6"
+# After moving to fully on-device voice (WhisperKit + AVSpeechSynthesizer),
+# the worker only proxies Anthropic chat requests. ASSEMBLYAI_API_KEY and
+# ELEVENLABS_API_KEY are no longer required — you can delete them from the
+# worker's secrets store with `npx wrangler secret delete <NAME>`.
