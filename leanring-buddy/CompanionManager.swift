@@ -21,6 +21,40 @@ enum CompanionVoiceState {
     case responding
 }
 
+/// The four cursor colors the user can pick from in the menu bar panel.
+/// `blue` is the historical default that matches the original Clicky
+/// look. The other three give the cursor a more personal feel without
+/// drifting off-brand.
+enum CompanionCursorColor: String, CaseIterable {
+    case blue
+    case purple
+    case green
+    case pink
+
+    /// SwiftUI Color used to render the cursor, response bubble dot,
+    /// waveform, and spinner. Hex values picked to read well on both
+    /// light and dark wallpapers.
+    var swiftUIColor: Color {
+        switch self {
+        case .blue:   return Color(hex: "#3380FF")
+        case .purple: return Color(hex: "#A463F2")
+        case .green:  return Color(hex: "#34C759")
+        case .pink:   return Color(hex: "#FF375F")
+        }
+    }
+
+    /// Short human-readable name, used by VoiceOver / tooltips on the
+    /// color picker swatches.
+    var displayName: String {
+        switch self {
+        case .blue:   return "Blue"
+        case .purple: return "Purple"
+        case .green:  return "Green"
+        case .pink:   return "Pink"
+        }
+    }
+}
+
 @MainActor
 final class CompanionManager: ObservableObject {
     @Published private(set) var voiceState: CompanionVoiceState = .idle
@@ -258,6 +292,27 @@ final class CompanionManager: ObservableObject {
     func setWebSearchEnabled(_ enabled: Bool) {
         isWebSearchEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: "isWebSearchEnabled")
+    }
+
+    /// User-selected cursor color. Drives the blue/purple/green/pink
+    /// rendering of the triangle cursor, waveform, spinner, and
+    /// element-arrival bubble. Persisted to UserDefaults via its raw
+    /// String value; default is blue (the original Clicky look).
+    @Published var selectedCursorColor: CompanionCursorColor = {
+        let storedRawValue = UserDefaults.standard.string(forKey: "selectedCursorColor")
+        return storedRawValue.flatMap(CompanionCursorColor.init(rawValue:)) ?? .blue
+    }()
+
+    func setSelectedCursorColor(_ newCursorColor: CompanionCursorColor) {
+        selectedCursorColor = newCursorColor
+        UserDefaults.standard.set(newCursorColor.rawValue, forKey: "selectedCursorColor")
+    }
+
+    /// Convenience accessor returning the SwiftUI Color the cursor and
+    /// related chrome should render in. Updates automatically when the
+    /// user picks a new color in the menu bar panel.
+    var currentCursorColor: Color {
+        selectedCursorColor.swiftUIColor
     }
 
     /// Whether the user has completed onboarding at least once. Persisted
