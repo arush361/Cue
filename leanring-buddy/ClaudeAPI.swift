@@ -6,16 +6,51 @@
 import Foundation
 
 /// Claude API helper with streaming for progressive text display.
+///
+/// Two modes:
+///   - **Direct**: pass `directAnthropicAPIKey` and the client calls
+///     `https://api.anthropic.com/v1/messages` itself with `x-api-key`.
+///     Recommended for personal use — no Worker to deploy, no extra
+///     hop. The key is provided at runtime (env var) so it never gets
+///     bundled into the binary.
+///   - **Proxy**: pass `proxyURL` pointing at a Cloudflare Worker (or
+///     equivalent) that holds the Anthropic key as a secret and forwards
+///     requests. Recommended when shipping signed builds to other people.
 class ClaudeAPI {
     private static let tlsWarmupLock = NSLock()
     private static var hasStartedTLSWarmup = false
 
     private let apiURL: URL
+    /// When non-nil, the client is in direct mode and will attach this
+    /// key as the `x-api-key` header on every request.
+    private let directAnthropicAPIKey: String?
     var model: String
     private let session: URLSession
 
-    init(proxyURL: String, model: String = "claude-sonnet-4-6") {
-        self.apiURL = URL(string: proxyURL)!
+    /// Direct-mode initializer. The client posts straight to Anthropic
+    /// with the given key — no proxy involved.
+    convenience init(directAnthropicAPIKey: String, model: String = "claude-sonnet-4-6") {
+        self.init(
+            apiURL: URL(string: "https://api.anthropic.com/v1/messages")!,
+            directAnthropicAPIKey: directAnthropicAPIKey,
+            model: model
+        )
+    }
+
+    /// Proxy-mode initializer (the original Clicky path). The Worker at
+    /// `proxyURL` is expected to inject the actual Anthropic key on its
+    /// end, so we don't carry one here.
+    convenience init(proxyURL: String, model: String = "claude-sonnet-4-6") {
+        self.init(
+            apiURL: URL(string: proxyURL)!,
+            directAnthropicAPIKey: nil,
+            model: model
+        )
+    }
+
+    private init(apiURL: URL, directAnthropicAPIKey: String?, model: String) {
+        self.apiURL = apiURL
+        self.directAnthropicAPIKey = directAnthropicAPIKey
         self.model = model
 
         // Use .default instead of .ephemeral so TLS session tickets are cached.
@@ -41,6 +76,13 @@ class ClaudeAPI {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // In direct mode we must add the Anthropic-specific auth headers
+        // ourselves. In proxy mode the Worker does it server-side and we
+        // skip these so the key never leaves the env / scheme.
+        if let directAnthropicAPIKey {
+            request.setValue(directAnthropicAPIKey, forHTTPHeaderField: "x-api-key")
+            request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        }
         return request
     }
 

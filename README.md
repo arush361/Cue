@@ -6,27 +6,68 @@ Cue is a fork of [Clicky](https://github.com/farzaa/clicky) by Farza, **rebuilt 
 
 ## Architecture (the short version)
 
-Menu bar app (no dock icon) with two `NSPanel` windows: one is the control panel dropdown, the other is the full-screen transparent cursor overlay. Push-to-talk buffers audio locally, runs WhisperKit transcription on key-up, then sends the transcript + screenshot to Claude via streaming SSE through a Cloudflare Worker proxy. The response is spoken locally via Kokoro-82M v1.0 (neural TTS, ~88MB ONNX model) once it finishes downloading; until then, `AVSpeechSynthesizer` covers playback. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
+Menu bar app (no dock icon) with two `NSPanel` windows: one is the control panel dropdown, the other is the full-screen transparent cursor overlay. Push-to-talk buffers audio locally, runs WhisperKit transcription on key-up, then sends the transcript + screenshot to Claude via streaming SSE. The response is spoken locally via Kokoro-82M v1.0 (neural TTS, ~88MB ONNX model) once it finishes downloading; until then, `AVSpeechSynthesizer` covers playback. Claude can embed `[POINT:x,y:label:screenN]` tags in its responses to make the cursor fly to specific UI elements across multiple monitors.
 
 No AssemblyAI, no ElevenLabs, no per-character quotas. Only Anthropic.
 
 For the full technical breakdown, read `AGENTS.md` (also symlinked as `CLAUDE.md`). For the one-time Xcode-side wiring, read `SETUP_OFFLINE.md`.
 
-## Prerequisites
+## Hardware requirements
 
-- macOS 14.2+ (for ScreenCaptureKit)
-- Xcode 15+
-- Node.js 18+ (for the Cloudflare Worker)
-- A [Cloudflare](https://cloudflare.com) account (free tier works)
-- An [Anthropic API key](https://console.anthropic.com)
-- Apple Silicon recommended (Intel works but WhisperKit is much slower)
+| | Minimum | Recommended |
+|---|---|---|
+| **macOS** | 14.2 (Sonoma) | 26 (Tahoe) for real Liquid Glass UI |
+| **CPU** | Intel Core i5 (8th gen+) | Apple Silicon (M1 / M2 / M3 / M4) |
+| **RAM** | 8 GB | 16 GB |
+| **Free disk** | ~500 MB (models + caches) | ~1 GB |
+| **Microphone** | Any built-in or USB mic | Same |
+| **Display** | Any | Single ≥1280×800 for the cursor flight to feel right |
+
+Apple Silicon is **strongly recommended**. WhisperKit uses CoreML / the Apple Neural Engine — on Apple Silicon, full transcription of a 10-second utterance happens in ~150ms. On Intel Macs the same workload falls back to CPU and can take 1-2 seconds, which makes the push-to-talk experience feel sluggish. Kokoro inference via ONNX Runtime is similarly faster on Apple Silicon thanks to its INT8 quantized model.
+
+You'll also need:
+- **Xcode 15+** (for the build)
+- **An Anthropic API key** ([console.anthropic.com](https://console.anthropic.com))
+- *(Optional for the fallback path)* a [Cloudflare](https://cloudflare.com) account + Node.js 18+
 
 ## Setup
 
-### 1. Cloudflare Worker
+There are two ways to give Cue your Anthropic API key. Pick the one that fits how you're using the app.
 
-The Worker is a tiny proxy that holds your Anthropic API key. The app talks to the Worker; the Worker talks to Anthropic. Key never ships in the binary.
+### Recommended: direct mode (personal use)
 
+Cue talks to `api.anthropic.com` directly, with your key read at runtime from the process environment. The key is never bundled into the binary, never committed to git, and never leaves your machine.
+
+1. **Get an Anthropic API key** from [console.anthropic.com](https://console.anthropic.com).
+
+2. **Add the key as a scheme environment variable in Xcode**:
+   - Open `leanring-buddy.xcodeproj`.
+   - Product → **Scheme → Edit Scheme…** (or **⌘ <**).
+   - Select **Run** in the left sidebar → **Arguments** tab.
+   - Under **Environment Variables**, click **+**:
+     - Name: `ANTHROPIC_API_KEY`
+     - Value: your `sk-ant-...` key
+   - Close the dialog.
+
+3. **Wire up the two SPM packages and the new source files** in Xcode (one-time, see [SETUP_OFFLINE.md](./SETUP_OFFLINE.md)).
+
+4. **Build and run** (Cmd+R). On startup the console should show:
+   ```
+   🌐 Claude API: direct mode (env var ANTHROPIC_API_KEY)
+   ```
+
+Pros: zero infrastructure, no Worker to deploy, no extra hop. Cons: only works in the Xcode-launched build (the env var goes away when you run the app outside of Xcode). For a build you can run standalone, see the fallback below.
+
+### Fallback: Cloudflare Worker proxy (production / shared builds)
+
+Use this if you want to:
+- Ship a signed `.app` to someone else without burning your API key into the binary.
+- Run Cue without launching it from Xcode every time (e.g., on login).
+- Keep the API key on a server you control instead of on every machine.
+
+The Worker is a tiny proxy that holds your Anthropic API key as a Cloudflare secret. The app calls the Worker; the Worker forwards to Anthropic.
+
+**Deploy it:**
 ```bash
 cd worker
 npm install
@@ -36,54 +77,47 @@ npx wrangler deploy
 
 That returns a URL like `https://cue-proxy.your-subdomain.workers.dev`. Copy it.
 
-### 2. Local Worker dev (optional)
-
-For iterating on the Worker without deploying:
-
+**Or run it locally for development:**
 ```bash
 cd worker
 npx wrangler dev
 ```
 
-Local server runs at `http://localhost:8787`. Create `worker/.dev.vars` with:
-
+Local server starts at `http://localhost:8787`. Create `worker/.dev.vars`:
 ```
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### 3. Point the app at your Worker
+**Point the app at your Worker URL:**
 
-The Worker URL is hardcoded in:
+The Worker base URL lives in `leanring-buddy/CompanionManager.swift` as the `workerBaseURL` constant — default is `http://localhost:8787`. For a deployed Worker, replace with your `workers.dev` URL.
 
-- `leanring-buddy/CompanionManager.swift` (constant `workerBaseURL`)
-- `leanring-buddy/AssemblyAIStreamingTranscriptionProvider.swift` (constant `tokenProxyURL`, unused after Path A but still references the URL)
+Cue automatically prefers the Worker path **only when `ANTHROPIC_API_KEY` is not set in the environment**. So if you've configured the env var per the direct-mode instructions above, remove it (or empty it) to switch over. On startup the console will show:
+```
+🌐 Claude API: proxy mode (fallback to http://localhost:8787)
+```
 
-Default is `http://localhost:8787`. For production, replace with your deployed Worker URL.
+### One-time Xcode wiring (both paths)
 
-### 4. Wire up the two SPM packages and the new source files in Xcode
+Regardless of which key path you pick, you need to wire up the on-device voice stack once. Full walkthrough in **[SETUP_OFFLINE.md](./SETUP_OFFLINE.md)**. Short version:
 
-This is the only step that can't be automated from the terminal because it requires Xcode UI. The full walkthrough is in **[SETUP_OFFLINE.md](./SETUP_OFFLINE.md)**. Short version:
+1. **File → Add Package Dependencies…** → `https://github.com/argmaxinc/WhisperKit` → add to the `leanring-buddy` target.
+2. **File → Add Package Dependencies…** again → `https://github.com/microsoft/onnxruntime-swift-package-manager` → add `onnxruntime` to the target.
+3. Right-click the `leanring-buddy` group → **Add Files to "leanring-buddy"…** → select all six new files (`WhisperKitTranscriptionProvider.swift`, `LocalTTSClient.swift`, `KokoroTTSClient.swift`, `KokoroTokenizer.swift`, `KokoroPhonemizer.swift`, `KokoroAssetDownloader.swift`, `ResponseSidePanelView.swift`, `ResponseSidePanelManager.swift`) → ensure target is ticked → **Add**.
+4. (Optional) System Settings → Accessibility → Spoken Content → System Voice → Customize → download a Premium English voice for a cleaner fallback TTS while Kokoro is downloading.
 
-1. Open `leanring-buddy.xcodeproj`.
-2. **File → Add Package Dependencies…** → paste `https://github.com/argmaxinc/WhisperKit` → add to the `leanring-buddy` target.
-3. **File → Add Package Dependencies…** again → paste `https://github.com/microsoft/onnxruntime-swift-package-manager` → add `onnxruntime` to the `leanring-buddy` target.
-4. In the Project Navigator, right-click the `leanring-buddy` group → **Add Files to "leanring-buddy"…** → select all six new files (`WhisperKitTranscriptionProvider.swift`, `LocalTTSClient.swift`, `KokoroTTSClient.swift`, `KokoroTokenizer.swift`, `KokoroPhonemizer.swift`, `KokoroAssetDownloader.swift`) → make sure the `leanring-buddy` target is ticked → **Add**.
-5. (Optional, for best fallback voice quality) **System Settings → Accessibility → Spoken Content → System Voice → Customize…** → download a Premium English voice (e.g., "Ava (Premium)").
+### First-launch downloads
 
-### 5. Build & run
+On first run Cue downloads its on-device models:
+- WhisperKit `openai_whisper-small.en` model → `~/Library/Application Support/com.argmaxinc.whisperkit/` (~250 MB)
+- Kokoro `model_quantized.onnx` + `af_heart.bin` voice → `~/Library/Caches/Cue/kokoro/` (~89 MB)
+- CMU Pronouncing Dictionary → `~/Library/Caches/Cue/cmudict.dict` (~3 MB)
 
-In Xcode: select the `leanring-buddy` scheme → set your signing team under *Signing & Capabilities* → **Cmd + R**.
-
-On first launch:
-- WhisperKit downloads the `openai_whisper-small.en` model (~250MB) to `~/Library/Application Support/com.argmaxinc.whisperkit/`.
-- Kokoro downloads `model_quantized.onnx` (~88MB) and the default voice (`af_heart.bin`, ~520KB) to `~/Library/Caches/Cue/kokoro/`.
-- The CMU Pronouncing Dictionary downloads (`cmudict.dict`, ~3MB) to `~/Library/Caches/Cue/`.
-
-Total first-launch download: about 350MB. Subsequent launches reuse the cache and start instantly. While Kokoro is initializing, the app falls back to `AVSpeechSynthesizer` so it's immediately usable.
-
-Cue shows up in your menu bar. Click the icon, grant permissions, and you're good.
+Total: about 340 MB, one time. Subsequent launches reuse the cache and start instantly. While Kokoro is initializing, the app falls back to `AVSpeechSynthesizer` so it's usable from the very first push-to-talk.
 
 ### Permissions
+
+When you first run Cue, grant these in the menu bar panel:
 
 - **Microphone** for push-to-talk voice capture
 - **Accessibility** for the global keyboard shortcut (Control + Option)
@@ -102,17 +136,18 @@ It invalidates TCC (Transparency, Consent, and Control) permissions and the app 
 leanring-buddy/                            # Swift source (scheme name kept for compatibility)
   CompanionManager.swift                      # Central state machine
   CompanionPanelView.swift                    # Menu bar panel UI
-  ClaudeAPI.swift                             # Claude streaming client
+  ClaudeAPI.swift                             # Direct + proxy Claude client
   LocalTTSClient.swift                        # Fallback TTS (AVSpeechSynthesizer)
   KokoroTTSClient.swift                       # Primary TTS (Kokoro-82M via ONNX Runtime)
   KokoroPhonemizer.swift                      # Text → IPA via CMU dict + ARPAbet→IPA
   KokoroTokenizer.swift                       # IPA → int64 token IDs for Kokoro
   KokoroAssetDownloader.swift                 # Lazy download of Kokoro model + voices
   WhisperKitTranscriptionProvider.swift       # On-device STT (WhisperKit)
+  ResponseSidePanelView.swift                 # Live-response side panel (Granola-style glass)
+  ResponseSidePanelManager.swift              # NSPanel host for the side panel
   OverlayWindow.swift                         # Blue cursor overlay
   BuddyDictation*.swift                       # Push-to-talk pipeline
-  AssemblyAI*.swift, OpenAI*.swift, Apple*.swift  # Optional cloud / Apple-Speech fallbacks
-worker/                                    # Cloudflare Worker proxy
+worker/                                    # Cloudflare Worker proxy (fallback path)
   src/index.ts                                # Single route: /chat
 AGENTS.md                                  # Full architecture doc (CLAUDE.md is a symlink)
 SETUP_OFFLINE.md                           # One-time Xcode setup walkthrough
