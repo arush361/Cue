@@ -24,11 +24,13 @@ import SwiftUI
 
 @MainActor
 final class ResponseSidePanelManager {
-    /// Width of the floating panel in points. Reduced from 380 → 304
-    /// (a 20% trim) so the panel takes less horizontal real estate
-    /// while still leaving a comfortable line length for body text.
-    /// Fixed for simplicity; resizable can come later.
-    private static let panelWidthInPoints: CGFloat = 304
+    /// Width of the floating panel in points. Bumped 304 → 456 (a 50%
+    /// increase) for noticeably more horizontal reading room on long
+    /// responses — paragraphs wrap less often and code-ish snippets
+    /// fit on a single line more often. Still narrow enough to leave
+    /// the rest of the screen usable. Fixed for simplicity; resizable
+    /// can come later.
+    private static let panelWidthInPoints: CGFloat = 456
 
     /// Margin from the right and top/bottom edges of the visible frame so the
     /// panel doesn't crash into the menu bar / dock.
