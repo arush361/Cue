@@ -68,6 +68,14 @@ struct CompanionPanelView: View {
 
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
+                    .frame(height: 12)
+
+                webSearchToggleRow
+                    .padding(.horizontal, 16)
+            }
+
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
                     .frame(height: 16)
 
                 dmFarzaButton
@@ -552,6 +560,40 @@ struct CompanionPanelView: View {
     }
 
 
+
+    // MARK: - Web Search Toggle
+
+    /// Lets the user enable / disable Claude's web-search tool for the
+    /// chat endpoint. When on, every response request advertises the
+    /// `web_search_20250305` server tool and Claude can pull live info
+    /// (news, weather, sports, recent events). Capped at 3 searches
+    /// per response.
+    private var webSearchToggleRow: some View {
+        HStack {
+            HStack(spacing: 8) {
+                Image(systemName: "globe")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(DS.Colors.textTertiary)
+                    .frame(width: 16)
+
+                Text("Search the web")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(DS.Colors.textSecondary)
+            }
+
+            Spacer()
+
+            Toggle("", isOn: Binding(
+                get: { companionManager.isWebSearchEnabled },
+                set: { companionManager.setWebSearchEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .tint(DS.Colors.accent)
+            .scaleEffect(0.8)
+        }
+        .padding(.vertical, 4)
+    }
 
     // MARK: - Show Response Panel Toggle
 

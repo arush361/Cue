@@ -246,6 +246,20 @@ final class CompanionManager: ObservableObject {
         }
     }
 
+    /// User preference for whether Claude is allowed to search the web
+    /// when answering. When true, every chat request advertises the
+    /// `web_search_20250305` server tool and Claude decides per-turn
+    /// whether to invoke it (capped at 3 searches per response).
+    /// Persisted to UserDefaults; default is on so general-knowledge
+    /// questions get current answers out of the box.
+    @Published var isWebSearchEnabled: Bool =
+        UserDefaults.standard.object(forKey: "isWebSearchEnabled") as? Bool ?? true
+
+    func setWebSearchEnabled(_ enabled: Bool) {
+        isWebSearchEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: "isWebSearchEnabled")
+    }
+
     /// Whether the user has completed onboarding at least once. Persisted
     /// to UserDefaults so the Start button only appears on first launch.
     var hasCompletedOnboarding: Bool {
@@ -665,6 +679,7 @@ final class CompanionManager: ObservableObject {
     - if the user's question relates to what's on their screen, reference specific things you see.
     - if the screenshot doesn't seem relevant to their question, just answer the question directly.
     - you can help with anything — coding, writing, general knowledge, brainstorming.
+    - if a question needs current information you don't already know (news, weather, sports scores, recent events, current prices, what someone said yesterday, who won last night's game, etc.), use the web_search tool. don't search for things that are clearly on the user's screen or that are stable facts you already know — only reach for the web when freshness matters. when you do cite something from the web, mention the source naturally ("according to the verge", "from apple's announcement"), not with bracketed numbers.
     - never say "simply" or "just".
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
     - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
@@ -728,6 +743,7 @@ final class CompanionManager: ObservableObject {
                     systemPrompt: Self.companionVoiceResponseSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
+                    enableWebSearch: isWebSearchEnabled,
                     onTextChunk: { [weak self] chunk in
                         // Feed the streamed chunk to the response side panel,
                         // BUT strip any partial "[POINT..." tag on the fly

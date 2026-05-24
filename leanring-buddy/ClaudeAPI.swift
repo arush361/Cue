@@ -140,11 +140,22 @@ class ClaudeAPI {
     /// Send a vision request to Claude with streaming.
     /// Calls `onTextChunk` on the main actor each time new text arrives so the UI updates progressively.
     /// Returns the full accumulated text and total duration when the stream completes.
+    ///
+    /// - Parameter enableWebSearch: when true, includes Anthropic's
+    ///   `web_search_20250305` server tool in the request so Claude can
+    ///   query the web for current information (news, weather, sports,
+    ///   anything time-sensitive). Capped at 3 searches per response so
+    ///   one chatty turn can't run up an unbounded bill. The search is
+    ///   executed by Anthropic's servers; the resulting tool-use blocks
+    ///   come back through the same SSE stream as additional content
+    ///   blocks, which the parser below safely ignores while still
+    ///   delivering the model's natural-language text.
     func analyzeImageStreaming(
         images: [(data: Data, label: String)],
         systemPrompt: String,
         conversationHistory: [(userPlaceholder: String, assistantResponse: String)] = [],
         userPrompt: String,
+        enableWebSearch: Bool = false,
         onTextChunk: @MainActor @Sendable (String) -> Void
     ) async throws -> (text: String, duration: TimeInterval) {
         let startTime = Date()
@@ -181,7 +192,7 @@ class ClaudeAPI {
         ])
         messages.append(["role": "user", "content": contentBlocks])
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": 1024,
             "stream": true,
@@ -189,10 +200,23 @@ class ClaudeAPI {
             "messages": messages
         ]
 
+        if enableWebSearch {
+            // Anthropic's built-in web search tool. The model decides
+            // when to call it; we just have to advertise it. max_uses
+            // caps the number of searches per response so a single
+            // turn can't run up an unbounded bill.
+            body["tools"] = [[
+                "type": "web_search_20250305",
+                "name": "web_search",
+                "max_uses": 3
+            ]]
+        }
+
         let bodyData = try JSONSerialization.data(withJSONObject: body)
         request.httpBody = bodyData
         let payloadMB = Double(bodyData.count) / 1_048_576.0
-        print("🌐 Claude streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)")
+        let webSearchTagForLog = enableWebSearch ? " (web search enabled)" : ""
+        print("🌐 Claude streaming request: \(String(format: "%.1f", payloadMB))MB, \(images.count) image(s)\(webSearchTagForLog)")
 
         // Use bytes streaming for SSE (Server-Sent Events)
         let (byteStream, response) = try await session.bytes(for: request)
