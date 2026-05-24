@@ -641,11 +641,11 @@ struct CompanionPanelView: View {
         .pointerCursor()
     }
 
-    // MARK: - DM Farza Button
+    // MARK: - Contact Me Button
 
     private var dmFarzaButton: some View {
         Button(action: {
-            if let url = URL(string: "https://x.com/farzatv") {
+            if let url = URL(string: "https://www.linkedin.com/in/sharma-arush/") {
                 NSWorkspace.shared.open(url)
             }
         }) {
@@ -654,9 +654,9 @@ struct CompanionPanelView: View {
                     .font(.system(size: 12, weight: .medium))
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Got feedback? DM me")
+                    Text("Got feedback? Contact me")
                         .font(.system(size: 12, weight: .semibold))
-                    Text("Bugs, ideas, anything — I read every message.")
+                    Text("Bugs, ideas, anything — connect on LinkedIn.")
                         .font(.system(size: 10))
                         .foregroundColor(DS.Colors.textTertiary)
                 }
