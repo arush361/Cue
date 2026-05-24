@@ -73,6 +73,13 @@ actor KokoroAssetDownloader {
         }
 
         // The downloaded file lives in a temp dir — move it to our cache.
+        // Make sure the parent directory exists first (voices live under a
+        // `voices/` subdirectory that the top-level createDirectory call above
+        // doesn't cover).
+        try FileManager.default.createDirectory(
+            at: localFileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try? FileManager.default.removeItem(at: localFileURL)
         try FileManager.default.moveItem(at: downloadedFileURL, to: localFileURL)
         print("📥 Kokoro: cached \(humanReadableLabel) at \(localFileURL.path)")
