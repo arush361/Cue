@@ -129,4 +129,123 @@ enum CompanionScreenCaptureUtility {
 
         return capturedScreens
     }
+
+    enum CaptureError: LocalizedError {
+        case noEligibleWindow
+        var errorDescription: String? {
+            switch self {
+            case .noEligibleWindow: return "no eligible frontmost window was found"
+            }
+        }
+    }
+
+    /// Companion-flow entry point. Tries to capture only the frontmost
+    /// user-app window for a sharper, focused image. Falls back to a
+    /// full all-screens capture if no eligible window can be found
+    /// (e.g. only Finder is frontmost with no open window, or a
+    /// menu / popup is active).
+    static func captureFrontmostFocusedRegionAsJPEG() async throws -> [CompanionScreenCapture] {
+        do {
+            return [try await captureFrontmostUserWindowAsJPEG()]
+        } catch {
+            print("📸 frontmost-window capture unavailable (\(error.localizedDescription)) — falling back to full-screen")
+            return try await captureAllScreensAsJPEG()
+        }
+    }
+
+    /// Captures only the frontmost non-Cue app window. Throws
+    /// `CaptureError.noEligibleWindow` when no suitable window exists;
+    /// callers should fall back to a full-screen capture.
+    static func captureFrontmostUserWindowAsJPEG() async throws -> CompanionScreenCapture {
+        let content = try await SCShareableContent.excludingDesktopWindows(
+            false,
+            onScreenWindowsOnly: true
+        )
+        let cueBundleId = Bundle.main.bundleIdentifier
+        let frontmostPid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+
+        // Filter to "real" non-Cue app windows. `windowLayer == 0` excludes
+        // floating panels, menus, Spotlight, the dock, etc.
+        let eligible = content.windows.filter { window in
+            guard let app = window.owningApplication else { return false }
+            if app.bundleIdentifier == cueBundleId { return false }
+            if window.windowLayer != 0 { return false }
+            return window.frame.width > 50 && window.frame.height > 50
+        }
+
+        // Prefer the OS-frontmost app's window; else pick the topmost
+        // eligible window. `content.windows` is z-ordered front-to-back.
+        var pickedWindow: SCWindow? = nil
+        if let pid = frontmostPid {
+            pickedWindow = eligible.first { $0.owningApplication?.processID == pid }
+        }
+        if pickedWindow == nil { pickedWindow = eligible.first }
+
+        guard let window = pickedWindow else {
+            throw CaptureError.noEligibleWindow
+        }
+
+        let filter = SCContentFilter(desktopIndependentWindow: window)
+        let configuration = SCStreamConfiguration()
+        let maxDimension = 1280
+        let frameWidth = window.frame.width
+        let frameHeight = window.frame.height
+        let aspectRatio = frameWidth / max(frameHeight, 1)
+        if frameWidth >= frameHeight {
+            configuration.width = maxDimension
+            configuration.height = Int(CGFloat(maxDimension) / aspectRatio)
+        } else {
+            configuration.height = maxDimension
+            configuration.width = Int(CGFloat(maxDimension) * aspectRatio)
+        }
+
+        let cgImage = try await SCScreenshotManager.captureImage(
+            contentFilter: filter,
+            configuration: configuration
+        )
+
+        guard let jpegData = NSBitmapImageRep(cgImage: cgImage)
+                .representation(using: .jpeg, properties: [.compressionFactor: 0.8]) else {
+            throw NSError(domain: "CompanionScreenCapture", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "Failed to JPEG-encode the window capture"])
+        }
+
+        // SCWindow.frame uses Core Graphics screen coordinates (y down from
+        // the top of the primary display). The downstream coord transform
+        // and overlay routing both expect AppKit coordinates (y up from the
+        // bottom — same space as NSEvent.mouseLocation and NSScreen.frame),
+        // so convert before storing.
+        let windowFrameInAppKit = convertCGRectToAppKitCoordinates(window.frame)
+
+        let appName = window.owningApplication?.applicationName ?? "the user's app"
+        let title = window.title?.trimmingCharacters(in: .whitespaces) ?? ""
+        let label = title.isEmpty
+            ? "user's current window — \(appName)"
+            : "user's current window — \(appName): '\(title)'"
+
+        return CompanionScreenCapture(
+            imageData: jpegData,
+            label: label,
+            isCursorScreen: true,
+            displayWidthInPoints: Int(windowFrameInAppKit.width),
+            displayHeightInPoints: Int(windowFrameInAppKit.height),
+            displayFrame: windowFrameInAppKit,
+            screenshotWidthInPixels: configuration.width,
+            screenshotHeightInPixels: configuration.height
+        )
+    }
+
+    /// Flips y between Core Graphics screen coords (y down from top of
+    /// primary display) and AppKit screen coords (y up from bottom). x is
+    /// unchanged. Uses `NSScreen.screens.first.frame.maxY` as the reference
+    /// — that's the primary display's upper edge in AppKit space.
+    private static func convertCGRectToAppKitCoordinates(_ cgRect: CGRect) -> CGRect {
+        let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
+        return CGRect(
+            x: cgRect.origin.x,
+            y: primaryMaxY - cgRect.origin.y - cgRect.size.height,
+            width: cgRect.size.width,
+            height: cgRect.size.height
+        )
+    }
 }

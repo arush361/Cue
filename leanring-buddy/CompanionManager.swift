@@ -754,16 +754,16 @@ final class CompanionManager: ObservableObject {
     - don't read out code verbatim. describe what the code does or what needs to change conversationally.
     - focus on giving a thorough, useful explanation. don't end with simple yes/no questions like "want me to explain more?" or "should i show you?" — those are dead ends that force the user to just say yes.
     - instead, when it fits naturally, end by planting a seed — mention something bigger or more ambitious they could try, a related concept that goes deeper, or a next-level technique that builds on what you just explained. make it something worth coming back for, not a question they'd just nod to. it's okay to not end with anything extra if the answer is complete on its own.
-    - if you receive multiple screen images, the one labeled "primary focus" is where the cursor is — prioritize that one but reference others if relevant.
+    - you'll usually get one image labeled "user's current window — <app>" of the app the user is in. when the window can't be identified, you'll get one or more "screen N of M" images instead — in that case, the one tagged "primary focus" is the cursor's screen.
 
     element pointing:
     you have a small blue triangle cursor that can fly to and point at things on screen. use it whenever pointing would genuinely help the user — if they're asking how to do something, looking for a menu, trying to find a button, or need help navigating an app, point at the relevant element. err on the side of pointing rather than not pointing, because it makes your help way more useful and concrete.
 
     don't point at things when it would be pointless — like if the user asks a general knowledge question, or the conversation has nothing to do with what's on screen, or you'd just be pointing at something obvious they're already looking at. but if there's a specific UI element, menu, button, or area on screen that's relevant to what you're helping with, point at it.
 
-    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the screenshot images are labeled with their pixel dimensions. use those dimensions as the coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
+    when you point, append a coordinate tag at the very end of your response, AFTER your spoken text. the image label has its pixel dimensions — those are your coordinate space. the origin (0,0) is the top-left corner of the image. x increases rightward, y increases downward.
 
-    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the screenshot's coordinate space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). if the element is on the cursor's screen you can omit the screen number. if the element is on a DIFFERENT screen, append :screenN where N is the screen number from the image label (e.g. :screen2). this is important — without the screen number, the cursor will point at the wrong place.
+    format: [POINT:x,y:label] where x,y are integer pixel coordinates in the image's space, and label is a short 1-3 word description of the element (like "search bar" or "save button"). when you got a single "user's current window" image, that's all you need — no screen suffix. only if you received multiple "screen N of M" images AND the element is on a non-cursor screen, append :screenN (e.g. :screen2) so the cursor routes to the right monitor. single-window responses are routed automatically.
 
     if pointing wouldn't help, append [POINT:none].
 
@@ -790,8 +790,11 @@ final class CompanionManager: ObservableObject {
             voiceState = .processing
 
             do {
-                // Capture all connected screens so the AI has full context
-                let screenCaptures = try await CompanionScreenCaptureUtility.captureAllScreensAsJPEG()
+                // Capture only the frontmost app window for a sharper,
+                // focused image — no desktop clutter, no second monitors.
+                // Falls back to all connected screens if no eligible window
+                // can be found.
+                let screenCaptures = try await CompanionScreenCaptureUtility.captureFrontmostFocusedRegionAsJPEG()
 
                 guard !Task.isCancelled else { return }
 
