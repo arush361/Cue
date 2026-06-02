@@ -20,7 +20,7 @@
 	<key>SUPublicEDKey</key>
 	<string>/l3d2rw5ZZFRU3AadP/w2Zf8FHfhA6bKv16BQOV5OSk=</string>
 	<key>VoiceTranscriptionProvider</key>
-	<string>whisperkit</string>
+	<string>macos-speech</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Cue uses your microphone so you can talk to it</string>
 	<key>NSScreenCaptureUsageDescription</key>
