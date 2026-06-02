@@ -4,12 +4,18 @@
 //
 //  macOS-26+ on-device transcription using the new Speech framework
 //  (SpeechAnalyzer + DictationTranscriber). No model download, no
-//  WhisperKit dependency — the model ships with the OS (locale packs
-//  are managed in System Settings → Accessibility → Spoken Content).
+//  WhisperKit dependency — the dictation model ships with the OS
+//  (locale packs are managed in System Settings → Accessibility →
+//  Spoken Content).
 //
 //  We pick DictationTranscriber over SpeechTranscriber because Apple
 //  documents it as "similar to system dictation features" — a better
 //  fit for our push-to-talk use case than the general-purpose transcriber.
+//
+//  Preset: `progressiveShortDictation` — Apple's own description is
+//  "immediate transcription of about a minute of live audio", which
+//  matches push-to-talk semantics exactly (interim results streamed
+//  live, final result on key release).
 //
 //  Falls back gracefully: on macOS < 26, the entire file is gated out
 //  via @available. On macOS 26 with no installed locale, isConfigured
@@ -34,8 +40,9 @@ final class MacOSSpeechAnalyzerTranscriptionProvider: BuddyTranscriptionProvider
     let displayName = "macOS 26 Speech (SpeechAnalyzer)"
     let requiresSpeechRecognitionPermission = true
 
-    /// Locale we'll try in priority order. First match in `installedLocales`
-    /// wins; otherwise we report unconfigured and fall back to WhisperKit.
+    /// Locales we'll try in priority order. First match in
+    /// `DictationTranscriber.installedLocales` wins; otherwise we report
+    /// unconfigured and the factory falls back to WhisperKit.
     private static let candidateLocales: [Locale] = [
         Locale.autoupdatingCurrent,
         Locale(identifier: "en-US"),
@@ -43,8 +50,8 @@ final class MacOSSpeechAnalyzerTranscriptionProvider: BuddyTranscriptionProvider
     ]
 
     private static var bestInstalledLocale: Locale? {
-        guard DictationTranscriber.isAvailable else { return nil }
         let installed = DictationTranscriber.installedLocales
+        guard !installed.isEmpty else { return nil }
         for candidate in candidateLocales {
             if installed.contains(where: { $0.identifier == candidate.identifier }) {
                 return candidate
@@ -58,12 +65,12 @@ final class MacOSSpeechAnalyzerTranscriptionProvider: BuddyTranscriptionProvider
     }
 
     var unavailableExplanation: String? {
-        guard DictationTranscriber.isAvailable else {
-            return "macOS 26 Speech is not available on this hardware."
+        if DictationTranscriber.installedLocales.isEmpty {
+            return "No dictation locale is installed. Add one in System Settings → Accessibility → Spoken Content."
         }
         if Self.bestInstalledLocale == nil {
             let preferred = Self.candidateLocales.first?.identifier ?? "en-US"
-            return "Install the dictation model for \(preferred) in System Settings → Accessibility → Spoken Content."
+            return "Dictation is installed but not for \(preferred). Add it in System Settings → Accessibility → Spoken Content."
         }
         return nil
     }
@@ -91,13 +98,13 @@ final class MacOSSpeechAnalyzerTranscriptionProvider: BuddyTranscriptionProvider
 
 @available(macOS 26.0, *)
 final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscriptionSession {
-    /// Empirically chosen to match the AppleSpeech provider — gives the
-    /// recognizer a moment to emit the final result after we close audio.
+    /// Matches the AppleSpeech provider — gives the recognizer a moment
+    /// to flush the final result after we close audio input.
     let finalTranscriptFallbackDelaySeconds: TimeInterval = 1.2
 
     private let transcriber: DictationTranscriber
     private let analyzer: SpeechAnalyzer
-    private let bufferContinuation: AsyncStream<AVAudioPCMBuffer>.Continuation
+    private let bufferContinuation: AsyncStream<AnalyzerInput>.Continuation
     private let onTranscriptUpdate: (String) -> Void
     private let onFinalTranscriptReady: (String) -> Void
     private let onError: (Error) -> Void
@@ -118,34 +125,33 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
         self.onFinalTranscriptReady = onFinalTranscriptReady
         self.onError = onError
 
-        // DictationTranscriber: dictation-tuned, on-device, matches the
-        // accuracy/latency profile of the system dictation widget.
-        self.transcriber = DictationTranscriber(locale: locale, preset: .dictation)
+        // Live-streaming dictation preset (interim results during speech,
+        // final on close). See Apple docs:
+        //   progressiveShortDictation — "immediate transcription of about
+        //   a minute of live audio"
+        self.transcriber = DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
         self.analyzer = SpeechAnalyzer(modules: [transcriber])
 
-        // Feed audio buffers through an AsyncStream the analyzer consumes
-        // autonomously. Continuation is captured so appendAudioBuffer can
-        // yield into it from the synchronous dictation-manager callback.
-        let (bufferStream, continuation) = AsyncStream<AVAudioPCMBuffer>.makeStream()
+        // Feed analyzer through an AsyncStream of AnalyzerInput. Each
+        // AVAudioPCMBuffer the dictation manager hands us gets wrapped
+        // into an AnalyzerInput inside `appendAudioBuffer`.
+        let (bufferStream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.bufferContinuation = continuation
 
-        // Apply optional context biasing if the caller supplied key terms
-        // (project / app names that the dictation model wouldn't otherwise
-        // recognize well). DictationTranscriber accepts these via the
-        // analyzer's AnalysisContext.contextualStrings.
+        // Optional context biasing: pass project/app proper nouns the
+        // dictation model wouldn't otherwise recognize. Limited to 100
+        // total per Apple's guidance.
         if !keyterms.isEmpty {
-            try await analyzer.setContext({
-                let context = AnalysisContext()
-                context.contextualStrings = keyterms
-                return context
-            }())
+            let context = AnalysisContext()
+            context.contextualStrings = [.general: Array(keyterms.prefix(100))]
+            try await analyzer.setContext(context)
         }
 
         try await analyzer.start(inputSequence: bufferStream)
 
-        // Drain partial + final results into the dictation manager's
-        // callbacks. We run on a detached task; the analyzer is an actor
-        // and AsyncSequence iteration is cooperatively scheduled.
+        // Drain partial + final results. SpeechAnalyzer is an actor and
+        // AsyncSequence iteration is cooperatively scheduled, so it's
+        // fine to spin this off on a detached task.
         resultsTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -173,7 +179,7 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
 
     func appendAudioBuffer(_ audioBuffer: AVAudioPCMBuffer) {
         guard !hasRequestedFinalTranscript else { return }
-        bufferContinuation.yield(audioBuffer)
+        bufferContinuation.yield(AnalyzerInput(buffer: audioBuffer))
     }
 
     func requestFinalTranscript() {
@@ -182,7 +188,7 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
         bufferContinuation.finish()
         Task { [analyzer] in
             do { try await analyzer.finalizeAndFinishThroughEndOfInput() }
-            catch { /* ignore — results task will surface anything actionable */ }
+            catch { /* ignore — the results task surfaces any error */ }
         }
     }
 
