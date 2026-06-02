@@ -41,36 +41,36 @@ final class MacOSSpeechAnalyzerTranscriptionProvider: BuddyTranscriptionProvider
     let requiresSpeechRecognitionPermission = true
 
     /// Locales we'll try in priority order. First match in
-    /// `DictationTranscriber.installedLocales` wins; otherwise we report
-    /// unconfigured and the factory falls back to WhisperKit.
+    /// `DictationTranscriber.installedLocales` (async) wins at session start;
+    /// otherwise we throw and the dictation manager surfaces the error.
     private static let candidateLocales: [Locale] = [
         Locale.autoupdatingCurrent,
         Locale(identifier: "en-US"),
         Locale(identifier: "en-GB"),
     ]
 
-    private static var bestInstalledLocale: Locale? {
-        let installed = DictationTranscriber.installedLocales
-        guard !installed.isEmpty else { return nil }
+    /// Both `supportedLocales` and `installedLocales` on
+    /// DictationTranscriber are `get async`, so neither can gate the
+    /// sync `isConfigured` check. The @available(macOS 26.0) class-level
+    /// gate is our only sync OS-availability signal — that's enough.
+    ///
+    /// The real locale-installed check happens inside `startStreamingSession`
+    /// (async path) and throws a clear error if no dictation locale is
+    /// available. Almost all macOS 26 machines have at least one dictation
+    /// locale installed by default, so this edge case is rare.
+    let isConfigured = true
+
+    let unavailableExplanation: String? = nil
+
+    /// Async resolution of the best installed locale. Called inside
+    /// `startStreamingSession` (which is async) so we get the real check
+    /// without blocking the sync factory path.
+    private static func bestInstalledLocale() async -> Locale? {
+        let installed = await DictationTranscriber.installedLocales
         for candidate in candidateLocales {
             if installed.contains(where: { $0.identifier == candidate.identifier }) {
                 return candidate
             }
-        }
-        return nil
-    }
-
-    var isConfigured: Bool {
-        Self.bestInstalledLocale != nil
-    }
-
-    var unavailableExplanation: String? {
-        if DictationTranscriber.installedLocales.isEmpty {
-            return "No dictation locale is installed. Add one in System Settings → Accessibility → Spoken Content."
-        }
-        if Self.bestInstalledLocale == nil {
-            let preferred = Self.candidateLocales.first?.identifier ?? "en-US"
-            return "Dictation is installed but not for \(preferred). Add it in System Settings → Accessibility → Spoken Content."
         }
         return nil
     }
@@ -81,9 +81,9 @@ final class MacOSSpeechAnalyzerTranscriptionProvider: BuddyTranscriptionProvider
         onFinalTranscriptReady: @escaping (String) -> Void,
         onError: @escaping (Error) -> Void
     ) async throws -> any BuddyStreamingTranscriptionSession {
-        guard let locale = Self.bestInstalledLocale else {
+        guard let locale = await Self.bestInstalledLocale() else {
             throw MacOSSpeechAnalyzerTranscriptionProviderError(
-                message: unavailableExplanation ?? "macOS 26 Speech unavailable."
+                message: "No dictation locale installed. Add one in System Settings → Accessibility → Spoken Content."
             )
         }
         return try await MacOSSpeechAnalyzerTranscriptionSession(

@@ -21,7 +21,7 @@ import AVFoundation
 import Foundation
 
 @MainActor
-final class LocalTTSClient: NSObject {
+final class LocalTTSClient: NSObject, BuddyTTSClient {
     private let speechSynthesizer = AVSpeechSynthesizer()
 
     /// True between the moment we call `speak()` and the moment the
@@ -29,6 +29,10 @@ final class LocalTTSClient: NSObject {
     /// `isPlaying` property so the existing transient-cursor logic in
     /// CompanionManager keeps working unchanged.
     private(set) var isPlaying: Bool = false
+
+    /// LocalTTSClient is always ready — AVSpeechSynthesizer is in the OS,
+    /// no model download required. Conforms to BuddyTTSClient.
+    let isReady: Bool = true
 
     /// The highest-quality English voice available on this machine. Resolved
     /// once at init time and reused — voice listing is non-trivial work and
@@ -74,9 +78,11 @@ final class LocalTTSClient: NSObject {
     }
 
     /// Picks the highest-quality English voice installed on the system.
-    /// Prefers `.premium` voices (downloadable from System Settings → Accessibility →
-    /// Spoken Content), then `.enhanced`, then anything else. Within a quality
-    /// tier, prefers en-US, then en-GB, then any other English locale.
+    /// On macOS 26+, prefers Personal Voice / neural voices first (identified
+    /// by Apple's voice identifier convention). Otherwise: prefers `.premium`
+    /// voices (downloadable from System Settings → Accessibility → Spoken
+    /// Content), then `.enhanced`, then anything else. Within a quality tier,
+    /// prefers en-US, then en-GB, then any other English locale.
     private static func findBestAvailableEnglishVoice() -> AVSpeechSynthesisVoice? {
         let allInstalledVoices = AVSpeechSynthesisVoice.speechVoices()
         let englishVoices = allInstalledVoices.filter { $0.language.hasPrefix("en") }
@@ -87,8 +93,17 @@ final class LocalTTSClient: NSObject {
             preferredLanguageOrder.firstIndex(of: voice.language) ?? preferredLanguageOrder.count
         }
 
+        /// On macOS 26+, Apple ships richer neural voices and (optionally)
+        /// Personal Voice. Identifier substrings that should rank first.
+        /// Falls back to quality-tier ranking when no special voice matches.
+        func neuralOrPersonalVoiceRank(forVoice voice: AVSpeechSynthesisVoice) -> Int {
+            let identifier = voice.identifier.lowercased()
+            if identifier.contains("personalvoice") { return 0 }
+            if identifier.contains("neural") { return 1 }
+            return 2
+        }
+
         func qualityRank(forVoice voice: AVSpeechSynthesisVoice) -> Int {
-            // Higher quality should sort earlier — invert by subtracting from a constant.
             switch voice.quality {
             case .premium: return 0
             case .enhanced: return 1
@@ -97,7 +112,18 @@ final class LocalTTSClient: NSObject {
             }
         }
 
+        let isMacOS26OrLater: Bool = {
+            if #available(macOS 26.0, *) { return true }
+            return false
+        }()
+
         return englishVoices.min { firstVoice, secondVoice in
+            // On macOS 26+, prefer Personal Voice / neural voices first.
+            if isMacOS26OrLater {
+                let firstNeural = neuralOrPersonalVoiceRank(forVoice: firstVoice)
+                let secondNeural = neuralOrPersonalVoiceRank(forVoice: secondVoice)
+                if firstNeural != secondNeural { return firstNeural < secondNeural }
+            }
             let firstQualityRank = qualityRank(forVoice: firstVoice)
             let secondQualityRank = qualityRank(forVoice: secondVoice)
             if firstQualityRank != secondQualityRank {

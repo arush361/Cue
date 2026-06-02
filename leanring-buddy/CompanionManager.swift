@@ -146,33 +146,37 @@ final class CompanionManager: ObservableObject {
     /// so the response side panel can observe TTS completion without
     /// needing direct references to both clients.
     var isAnyTTSPlaying: Bool {
-        kokoroTTSClient.isPlaying || localTTSClient.isPlaying
+        ttsClientsInPreferenceOrder.contains { $0.isPlaying }
     }
 
-    /// Speaks `text` through the best available on-device TTS. Prefers
-    /// Kokoro (neural, higher quality) when ready; falls back to the system
-    /// synthesizer (AVSpeechSynthesizer) on any error or while Kokoro is
-    /// still downloading its model on first launch.
+    /// TTS engines in preference order. Each conforms to `BuddyTTSClient`.
+    /// First ready engine wins; if it throws, we fall through to the next.
+    /// Kokoro first (neural, higher quality) → LocalTTSClient
+    /// (AVSpeechSynthesizer — always available). Adding a new engine just
+    /// means dropping it into this list.
+    private var ttsClientsInPreferenceOrder: [any BuddyTTSClient] {
+        [kokoroTTSClient, localTTSClient]
+    }
+
+    /// Speaks `text` through the first ready engine in
+    /// `ttsClientsInPreferenceOrder`. Falls through on error.
     private func speakResponseThroughBestAvailableTTS(_ text: String) async {
-        if kokoroTTSClient.isReady {
+        for client in ttsClientsInPreferenceOrder where client.isReady {
             do {
-                try await kokoroTTSClient.speakText(text)
+                try await client.speakText(text)
                 return
             } catch {
-                print("⚠️ Kokoro TTS error, falling back to AVSpeechSynthesizer: \(error.localizedDescription)")
+                print("⚠️ TTS \(type(of: client)) failed, falling through: \(error.localizedDescription)")
             }
         }
-        do {
-            try await localTTSClient.speakText(text)
-        } catch {
-            print("⚠️ Local TTS error: \(error.localizedDescription)")
-        }
+        print("⚠️ All TTS engines failed or unready — no audio for this response.")
     }
 
-    /// Stops any TTS playback from either engine.
+    /// Stops any TTS playback from every registered engine.
     private func stopAllTTSPlayback() {
-        kokoroTTSClient.stopPlayback()
-        localTTSClient.stopPlayback()
+        for client in ttsClientsInPreferenceOrder {
+            client.stopPlayback()
+        }
     }
 
     /// Stops any currently-playing TTS audio. Exposed publicly so the

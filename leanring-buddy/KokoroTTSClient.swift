@@ -31,7 +31,7 @@ import OnnxRuntimeBindings
 #endif
 
 @MainActor
-final class KokoroTTSClient: NSObject {
+final class KokoroTTSClient: NSObject, BuddyTTSClient {
     /// Which Kokoro voice to use. "af_heart" is the default American Female
     /// voice with the cleanest output in the v1.0 release. Other options
     /// include "am_michael", "bf_emma", "bm_george", etc. See

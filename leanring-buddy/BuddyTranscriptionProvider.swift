@@ -35,6 +35,7 @@ enum BuddyTranscriptionProviderFactory {
         case assemblyAI = "assemblyai"
         case openAI = "openai"
         case appleSpeech = "apple"
+        case macOSSpeech = "macos-speech"
     }
 
     static func makeDefaultProvider() -> any BuddyTranscriptionProvider {
@@ -52,6 +53,14 @@ enum BuddyTranscriptionProviderFactory {
         let whisperKitProvider = WhisperKitTranscriptionProvider()
         let assemblyAIProvider = AssemblyAIStreamingTranscriptionProvider()
         let openAIProvider = OpenAIAudioTranscriptionProvider()
+
+        if preferredProvider == .macOSSpeech {
+            if #available(macOS 26.0, *) {
+                return MacOSSpeechAnalyzerTranscriptionProvider()
+            }
+            print("⚠️ Transcription: macOS 26 Speech preferred but running on older macOS — falling back to Apple Speech")
+            return AppleSpeechTranscriptionProvider()
+        }
 
         if preferredProvider == .appleSpeech {
             return AppleSpeechTranscriptionProvider()
@@ -103,9 +112,14 @@ enum BuddyTranscriptionProviderFactory {
             return AppleSpeechTranscriptionProvider()
         }
 
-        // No preference set — prefer WhisperKit if available (fully offline,
-        // no quotas), then fall back to cloud providers if configured, then
-        // Apple Speech as the last resort.
+        // No preference set — prefer macOS 26's SpeechAnalyzer (native, no
+        // download, OS-bundled model), then WhisperKit (offline but ~250MB
+        // first-launch download), then cloud providers, then SFSpeechRecognizer
+        // as the last resort.
+        if #available(macOS 26.0, *) {
+            return MacOSSpeechAnalyzerTranscriptionProvider()
+        }
+
         if whisperKitProvider.isConfigured {
             return whisperKitProvider
         }
