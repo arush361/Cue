@@ -95,6 +95,18 @@ struct CompanionPanelView: View {
                     .padding(.horizontal, 16)
             }
 
+            // API key row — visible in the steady-state panel (post-onboarding,
+            // all permissions granted) so users can save / replace their
+            // Anthropic key from the menu bar at any time. Collapsed by default;
+            // see anthropicAPIKeyRow.
+            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
+                Spacer()
+                    .frame(height: 8)
+
+                anthropicAPIKeyRow
+                    .padding(.horizontal, 16)
+            }
+
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
                 Spacer()
                     .frame(height: 16)
@@ -296,8 +308,6 @@ struct CompanionPanelView: View {
             if companionManager.hasScreenRecordingPermission {
                 screenContentPermissionRow
             }
-
-            anthropicAPIKeyRow
         }
     }
 
