@@ -276,10 +276,14 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
             to: convertedBuffer,
             error: &conversionError
         ) { _, inputStatus in
-            // Hand the source buffer once, then signal end-of-stream so the
-            // converter flushes. The closure may be called multiple times.
+            // Hand the source buffer once per call, then signal
+            // .noDataNow (NOT .endOfStream — that permanently kills the
+            // converter for subsequent buffers in the session). The
+            // closure may be called multiple times inside one convert(),
+            // and we'll be called again with a fresh outer convert() for
+            // every new AVAudioPCMBuffer that arrives.
             if didProvideInput {
-                inputStatus.pointee = .endOfStream
+                inputStatus.pointee = .noDataNow
                 return nil
             }
             didProvideInput = true
