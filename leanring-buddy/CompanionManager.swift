@@ -110,9 +110,17 @@ final class CompanionManager: ObservableObject {
     /// Claude API client. Priority: Keychain-saved key (set via the menu
     /// bar panel's API Key row) → ANTHROPIC_API_KEY environment variable
     /// (Xcode scheme Run > Arguments) → Cloudflare Worker proxy fallback.
-    /// Rebuilt on the fly whenever the user saves or clears their key —
-    /// see `rebuildClaudeAPI()`.
-    private var claudeAPI: ClaudeAPI = ClaudeAPI(proxyURL: "\(workerBaseURL)/chat", model: "claude-sonnet-4-6")
+    ///
+    /// Implicitly-unwrapped because `start()` is responsible for
+    /// constructing this exactly once via `rebuildClaudeAPI()`. We avoid
+    /// initializing a throwaway proxy-mode instance at property-init
+    /// time because ClaudeAPI fires a TLS-warmup HEAD on init — and a
+    /// stub instance would hit localhost:8787 (the proxy fallback URL)
+    /// before the real key is loaded, polluting the console with a
+    /// connection-refused / timeout error.
+    ///
+    /// Re-created whenever the user saves or clears their key.
+    private var claudeAPI: ClaudeAPI!
 
     /// True iff the user has saved a key in Keychain via the panel UI.
     /// The panel binds against this to swap between "Add API key" and
