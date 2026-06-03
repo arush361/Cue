@@ -156,12 +156,17 @@ final class ContinuousListeningSession {
 
         // (3) Drain transcriber results. We track two strings:
         //   - fullTranscript: latest text from the transcriber (UI preview).
-        //   - bestTranscriptForCurrentSegment: longest stable text in the
-        //     same prefix-trajectory; this is what we flush.
-        // Detecting a hard reset (new text shares NO prefix with best)
-        // is also an end-of-utterance signal — flush immediately so we
-        // don't wait the full silence window when the transcriber has
-        // clearly moved on to a new utterance.
+        //   - bestTranscriptForCurrentSegment: longest text we've seen
+        //     during the current utterance; this is what we flush.
+        //
+        // Earlier versions tried to detect a "hard reset" (new partial
+        // shares no prefix with best) and flush early from this loop.
+        // That fired prematurely on punctuation flicker like
+        // "...to?" → "...to this" and split single questions into
+        // multiple Claude calls. We rely exclusively on the silence
+        // timer for flush timing now — when the transcript stops
+        // changing for `silenceFinalizeSeconds`, the user has stopped
+        // speaking and we flush. Simpler, and proven correct in trace.
         transcriberTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -171,27 +176,15 @@ final class ContinuousListeningSession {
                     print("🎙️ ContinuousListening transcriber: \"\(text)\"")
                     self.onTranscriptUpdate(text)
 
-                    let best = self.bestTranscriptForCurrentSegment
-                    let isOnSameTrajectory = best.isEmpty
-                        || text.hasPrefix(best)
-                        || best.hasPrefix(text)
-
-                    if isOnSameTrajectory {
-                        // Take whichever is longer — keep the best when
-                        // the transcriber shrinks its own output.
-                        if text.count > best.count {
-                            self.bestTranscriptForCurrentSegment = text
-                        }
-                        await MainActor.run { self.scheduleSilenceFlush() }
-                    } else {
-                        // True reset: new text doesn't share a prefix
-                        // with what we'd been tracking. Flush the best
-                        // we had now, then start tracking the new text.
-                        print("🔀 ContinuousListening: reset detected — flushing best so far")
-                        await MainActor.run { self.flushSegmentIfAny() }
+                    // Keep the longest text we've seen this utterance.
+                    // The transcriber may shrink its own output (drop
+                    // trailing punctuation, reset to "?") between the
+                    // mature partial and the next utterance — never let
+                    // that overwrite our best.
+                    if text.count > self.bestTranscriptForCurrentSegment.count {
                         self.bestTranscriptForCurrentSegment = text
-                        await MainActor.run { self.scheduleSilenceFlush() }
                     }
+                    await MainActor.run { self.scheduleSilenceFlush() }
                 }
                 print("🎙️ ContinuousListening transcriber: stream ended")
             } catch {

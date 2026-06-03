@@ -300,6 +300,7 @@ final class CompanionManager: ObservableObject {
     private func enqueueStreamingTTSChunks(_ cumulative: String) {
         let cumulativeChars = Array(cumulative)
         var index = streamingTTSCursor
+        var didEnqueue = false
 
         while index < cumulativeChars.count {
             guard let end = nextSentenceEnd(in: cumulativeChars, from: index) else { break }
@@ -307,12 +308,20 @@ final class CompanionManager: ObservableObject {
             let sentence = String(sentenceChars).trimmingCharacters(in: .whitespacesAndNewlines)
             if !sentence.isEmpty {
                 streamingTTSQueue.append(sentence)
+                didEnqueue = true
             }
             streamingTTSCursor = end + 1
             index = streamingTTSCursor
         }
 
-        startStreamingTTSConsumerIfNeeded()
+        // Only spawn the consumer when we actually appended a sentence.
+        // The previous unconditional call spawned a fresh consumer for
+        // every text chunk — visible in logs as gen=5, gen=6, gen=7
+        // cycles for one response — and each spurious cycle held the
+        // mic muted through its 500ms tail-grace.
+        if didEnqueue {
+            startStreamingTTSConsumerIfNeeded()
+        }
     }
 
     /// On stream end, flush any trailing fragment that didn't end in a
