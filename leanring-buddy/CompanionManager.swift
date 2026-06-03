@@ -203,11 +203,15 @@ final class CompanionManager: ObservableObject {
 
     /// TTS engines in preference order. Each conforms to `BuddyTTSClient`.
     /// First ready engine wins; if it throws, we fall through to the next.
-    /// Kokoro first (neural, higher quality) → LocalTTSClient
-    /// (AVSpeechSynthesizer — always available). Adding a new engine just
-    /// means dropping it into this list.
+    ///
+    /// LocalTTSClient (AVSpeechSynthesizer w/ best installed Premium
+    /// voice, e.g. Ava) is primary because synthesis is essentially
+    /// instant — it starts speaking the moment a sentence is queued.
+    /// Kokoro (neural, higher voice quality but ~1-2s of CPU-bound
+    /// synthesis per sentence) is the fallback. Adding a new engine
+    /// just means dropping it into this list.
     private var ttsClientsInPreferenceOrder: [any BuddyTTSClient] {
-        [kokoroTTSClient, localTTSClient]
+        [localTTSClient, kokoroTTSClient]
     }
 
     /// Speaks `text` through the first ready engine in
