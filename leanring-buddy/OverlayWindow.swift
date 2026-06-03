@@ -52,21 +52,36 @@ class OverlayWindow: NSWindow {
     }
 }
 
-// Cursor-like triangle shape (equilateral)
+// Cursor-like triangle shape (equilateral) with gently rounded corners.
+// The corners are rounded by joining the three vertices with tangent arcs
+// (the standard rounded-polygon technique) instead of sharp line joins,
+// so the tip and base read as softer/more polished.
 struct Triangle: Shape {
+    /// Radius of the rounding applied at each of the three corners, in points.
+    var cornerRadius: CGFloat = 2.5
+
     func path(in rect: CGRect) -> Path {
-        var path = Path()
         let size = min(rect.width, rect.height)
         let height = size * sqrt(3.0) / 2.0
 
-        // Top vertex
-        path.move(to: CGPoint(x: rect.midX, y: rect.midY - height / 1.5))
-        // Bottom left vertex
-        path.addLine(to: CGPoint(x: rect.midX - size / 2, y: rect.midY + height / 3))
-        // Bottom right vertex
-        path.addLine(to: CGPoint(x: rect.midX + size / 2, y: rect.midY + height / 3))
+        let topVertex = CGPoint(x: rect.midX, y: rect.midY - height / 1.5)
+        let bottomLeftVertex = CGPoint(x: rect.midX - size / 2, y: rect.midY + height / 3)
+        let bottomRightVertex = CGPoint(x: rect.midX + size / 2, y: rect.midY + height / 3)
+
+        var path = Path()
+        // Start partway along the top -> bottom-left edge so the first arc has
+        // a clean tangent to begin from, then round each vertex in turn.
+        path.move(to: midpoint(topVertex, bottomLeftVertex))
+        path.addArc(tangent1End: bottomLeftVertex, tangent2End: bottomRightVertex, radius: cornerRadius)
+        path.addArc(tangent1End: bottomRightVertex, tangent2End: topVertex, radius: cornerRadius)
+        path.addArc(tangent1End: topVertex, tangent2End: bottomLeftVertex, radius: cornerRadius)
         path.closeSubpath()
         return path
+    }
+
+    /// Midpoint between two corners, used as a tangent-safe starting point on an edge.
+    private func midpoint(_ first: CGPoint, _ second: CGPoint) -> CGPoint {
+        CGPoint(x: (first.x + second.x) / 2, y: (first.y + second.y) / 2)
     }
 }
 
@@ -309,10 +324,26 @@ struct BlueCursorView: View {
             // During navigation: NO implicit animation — the frame-by-frame bezier
             // timer controls position directly at 60fps for a smooth arc flight.
             Triangle()
-                .fill(companionManager.currentCursorColor)
+                .fill(
+                    // Light highlight at the tip fading to the base color at the
+                    // bottom. Applied before .rotationEffect so the highlight
+                    // rotates with the triangle and stays at the leading tip.
+                    LinearGradient(
+                        gradient: Gradient(colors: [
+                            companionManager.currentCursorColor.blendedWithWhite(fraction: 0.35),
+                            companionManager.currentCursorColor
+                        ]),
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
                 .frame(width: 16, height: 16)
                 .rotationEffect(.degrees(triangleRotationDegrees))
-                .shadow(color: companionManager.currentCursorColor, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
+                // Two-layer glow: a tight bright core plus a wide soft halo, so the
+                // pointer reads as glowing rather than hard-edged. The halo still
+                // grows with buddyFlightScale to keep the "power up" feel on flights.
+                .shadow(color: companionManager.currentCursorColor.opacity(0.9), radius: 3, x: 0, y: 0)
+                .shadow(color: companionManager.currentCursorColor.opacity(0.35), radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
                 .opacity((buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0) * continuousSessionOpacityMultiplier)
                 .position(cursorPosition)

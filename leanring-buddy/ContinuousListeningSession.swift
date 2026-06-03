@@ -85,6 +85,15 @@ final class ContinuousListeningSession {
     private var detectorTask: Task<Void, Never>?
     private var hasFinished: Bool = false
 
+    /// Silence-based fallback. We schedule this every time the
+    /// transcriber emits a new partial; if the transcript stays
+    /// unchanged for `silenceFinalizeSeconds`, we treat that as
+    /// end-of-utterance and flush the segment. Belt-and-suspenders for
+    /// the case where SpeechDetector.results doesn't fire (which has
+    /// been observed on macOS 26 betas).
+    private var silenceTimer: Timer?
+    private static let silenceFinalizeSeconds: TimeInterval = 1.2
+
     // MARK: - Init / lifecycle
 
     init(locale: Locale) async throws {
@@ -135,9 +144,13 @@ final class ContinuousListeningSession {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
                     self.fullTranscript = text
+                    print("🎙️ ContinuousListening transcriber: \"\(text)\"")
                     self.onTranscriptUpdate(text)
+                    await MainActor.run { self.scheduleSilenceFlush() }
                 }
+                print("🎙️ ContinuousListening transcriber: stream ended")
             } catch {
+                print("⚠️ ContinuousListening transcriber error: \(error.localizedDescription)")
                 self.onError(error)
             }
         }
@@ -149,6 +162,7 @@ final class ContinuousListeningSession {
             do {
                 for try await result in detector.results {
                     let speakingNow = result.speechDetected
+                    print("🛰️ ContinuousListening VAD: speechDetected=\(speakingNow) (was=\(self.isCurrentlyDetectingSpeech))")
                     if speakingNow && !self.isCurrentlyDetectingSpeech {
                         self.isCurrentlyDetectingSpeech = true
                         self.onSpeechStarted()
@@ -157,7 +171,9 @@ final class ContinuousListeningSession {
                         self.flushSegmentIfAny()
                     }
                 }
+                print("🛰️ ContinuousListening VAD: stream ended")
             } catch {
+                print("⚠️ ContinuousListening VAD error: \(error.localizedDescription)")
                 self.onError(error)
             }
         }
@@ -208,16 +224,20 @@ final class ContinuousListeningSession {
         }
     }
 
-    /// Called by the orchestrator when the user double-presses to exit
-    /// (or the session timeout fires).
+    /// Called by the orchestrator when the user toggles the session
+    /// off (or the session timeout fires).
     func finish() async {
         guard !hasFinished else { return }
         hasFinished = true
+        await MainActor.run {
+            self.silenceTimer?.invalidate()
+            self.silenceTimer = nil
+        }
         bufferContinuation.finish()
         do { try await analyzer.finalizeAndFinishThroughEndOfInput() }
         catch { /* swallow — about to be torn down anyway */ }
         // Final flush in case the user was mid-sentence at exit.
-        flushSegmentIfAny()
+        await MainActor.run { self.flushSegmentIfAny() }
         transcriberTask?.cancel()
         detectorTask?.cancel()
     }
@@ -226,6 +246,10 @@ final class ContinuousListeningSession {
     /// something errored and we want to bail fast.
     func cancel() {
         hasFinished = true
+        DispatchQueue.main.async {
+            self.silenceTimer?.invalidate()
+            self.silenceTimer = nil
+        }
         bufferContinuation.finish()
         transcriberTask?.cancel()
         detectorTask?.cancel()
@@ -240,7 +264,25 @@ final class ContinuousListeningSession {
         let trimmed = slice.trimmingCharacters(in: .whitespacesAndNewlines)
         lastFlushedCursor = fullTranscript.count
         if !trimmed.isEmpty {
+            print("📤 ContinuousListening: flushing segment: \"\(trimmed)\"")
             onSegmentFinalized(trimmed)
+        }
+    }
+
+    /// Restart the silence timer. Each new transcriber partial pushes
+    /// the deadline forward; if the user keeps talking, the timer
+    /// never fires. After `silenceFinalizeSeconds` of stable
+    /// transcript, we treat that as end-of-utterance and flush.
+    @MainActor
+    private func scheduleSilenceFlush() {
+        silenceTimer?.invalidate()
+        silenceTimer = Timer.scheduledTimer(
+            withTimeInterval: Self.silenceFinalizeSeconds,
+            repeats: false
+        ) { [weak self] _ in
+            guard let self else { return }
+            print("⏱️ ContinuousListening: silence-flush fired")
+            self.flushSegmentIfAny()
         }
     }
 }
