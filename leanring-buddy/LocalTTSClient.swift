@@ -44,10 +44,14 @@ final class LocalTTSClient: NSObject, BuddyTTSClient {
         super.init()
         speechSynthesizer.delegate = self
         if let bestAvailableSpeechVoice {
-            print("🔊 LocalTTS: using voice \"\(bestAvailableSpeechVoice.name)\" (quality: \(Self.qualityDescription(bestAvailableSpeechVoice.quality)))")
+            print("🔊 LocalTTS: using voice \"\(bestAvailableSpeechVoice.name)\" (quality: \(Self.qualityDescription(bestAvailableSpeechVoice.quality))) — id: \(bestAvailableSpeechVoice.identifier)")
         } else {
             print("⚠️ LocalTTS: no English voice found, using system default")
         }
+        // One-shot inventory so we can see what else is installed in case
+        // we want to pick a different voice later. Quality is sorted desc;
+        // anything above .default tier is worth trying.
+        Self.logInstalledEnglishVoices()
     }
 
     /// Speaks `text` through AVSpeechSynthesizer. Returns once playback has
@@ -59,10 +63,19 @@ final class LocalTTSClient: NSObject, BuddyTTSClient {
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let speechUtterance = AVSpeechUtterance(string: trimmedText)
         speechUtterance.voice = bestAvailableSpeechVoice
-        // Slightly faster than the default rate to feel snappier as a companion.
-        speechUtterance.rate = AVSpeechUtteranceDefaultSpeechRate * 1.05
-        speechUtterance.pitchMultiplier = 1.0
+        // Slightly SLOWER than default for warmth — fast AVSpeech amplifies
+        // its robotic-ness; a small drop reads as more natural / human.
+        speechUtterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
+        // Lower pitch slightly to soften the voice. 1.0 reads flat and
+        // computery; 0.96 reads measured and conversational. The valid
+        // range is 0.5...2.0, but stay within 0.95-1.05 to avoid
+        // dipping into the uncanny / cartoonish bands.
+        speechUtterance.pitchMultiplier = 0.96
         speechUtterance.volume = 1.0
+        // Add a small pre-utterance silence so back-to-back sentences in
+        // the streaming-TTS queue don't run into each other.
+        speechUtterance.preUtteranceDelay = 0.08
+        speechUtterance.postUtteranceDelay = 0.05
 
         isPlaying = true
         speechSynthesizer.speak(speechUtterance)
@@ -139,6 +152,29 @@ final class LocalTTSClient: NSObject, BuddyTTSClient {
         case .enhanced: return "Enhanced"
         case .default: return "Default"
         @unknown default: return "Unknown"
+        }
+    }
+
+    /// Diagnostic dump of installed English voices above .default tier
+    /// so we can see what alternatives are available if the current
+    /// pick sounds robotic. Logged once at init.
+    private static func logInstalledEnglishVoices() {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") }
+            .filter { $0.quality != .default }
+            .sorted { (a, b) -> Bool in
+                if a.quality.rawValue != b.quality.rawValue {
+                    return a.quality.rawValue > b.quality.rawValue
+                }
+                return a.language < b.language
+            }
+        if voices.isEmpty {
+            print("🔊 LocalTTS: no Premium/Enhanced English voices installed. Add some in System Settings → Accessibility → Spoken Content → System Voice → Manage Voices.")
+            return
+        }
+        print("🔊 LocalTTS: installed Premium/Enhanced English voices (\(voices.count)):")
+        for voice in voices {
+            print("    \(qualityDescription(voice.quality).padding(toLength: 8, withPad: " ", startingAt: 0)) \(voice.language)  \(voice.name)  — id: \(voice.identifier)")
         }
     }
 }
