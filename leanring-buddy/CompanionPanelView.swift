@@ -17,6 +17,14 @@ struct CompanionPanelView: View {
     @State private var apiKeyInput: String = ""
     @State private var apiKeySaveStatus: APIKeySaveStatus = .idle
 
+    /// Drives the pulsing red dot when a continuous session is active.
+    @State private var continuousIndicatorPulse: Bool = false
+    /// Toggled every second to force the countdown label to re-render.
+    @State private var continuousSessionTick: Bool = false
+    /// 1Hz ticker fed into the indicator row's onReceive so the
+    /// "mm:ss left" countdown stays current without complex Combine.
+    private let panelClockTicker = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
     /// Brief status to render under the field after a save / clear attempt.
     enum APIKeySaveStatus: Equatable {
         case idle
@@ -35,6 +43,15 @@ struct CompanionPanelView: View {
             permissionsCopySection
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
+
+            // Continuous-listening session indicator. Visible only while
+            // a hands-free session is active. Pulses to remind the user
+            // the mic is hot; tap to exit.
+            if companionManager.isContinuousSessionActive {
+                Spacer().frame(height: 10)
+                continuousSessionIndicatorRow
+                    .padding(.horizontal, 16)
+            }
 
             // Steady-state panel (onboarded + permissions granted):
             // organized into three labeled sections. Daily-use controls
@@ -150,6 +167,65 @@ struct CompanionPanelView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
+    }
+
+    // MARK: - Continuous Session Indicator
+
+    /// Pulsing red dot + countdown shown at the top of the panel while
+    /// a hands-free continuous session is active. Tap to exit (alternate
+    /// to the double-press hotkey).
+    private var continuousSessionIndicatorRow: some View {
+        Button(action: {
+            companionManager.exitContinuousSession(reason: .manual)
+        }) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 8, height: 8)
+                    .opacity(continuousIndicatorPulse ? 1.0 : 0.35)
+                    .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: continuousIndicatorPulse)
+                Text("Listening")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Colors.textPrimary)
+                Spacer()
+                Text(continuousSessionCountdownText)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(DS.Colors.textSecondary)
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(DS.Colors.textTertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.red.opacity(0.10))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.red.opacity(0.25), lineWidth: 0.5)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onAppear { continuousIndicatorPulse = true }
+        .onDisappear { continuousIndicatorPulse = false }
+        .onReceive(panelClockTicker) { _ in
+            // Force the countdown to re-evaluate every second by
+            // touching state. Cheap and reliable.
+            continuousSessionTick.toggle()
+        }
+    }
+
+    /// mm:ss countdown text, computed from companionManager.continuousSessionEndsAt.
+    /// Reads continuousSessionTick so the view re-renders on each tick.
+    private var continuousSessionCountdownText: String {
+        _ = continuousSessionTick   // dependency hook for the timer
+        guard let endsAt = companionManager.continuousSessionEndsAt else { return "" }
+        let secondsLeft = max(0, Int(endsAt.timeIntervalSinceNow.rounded()))
+        let mm = secondsLeft / 60
+        let ss = secondsLeft % 60
+        return String(format: "%d:%02d left", mm, ss)
     }
 
     // MARK: - Permissions Copy
