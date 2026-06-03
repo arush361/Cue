@@ -271,6 +271,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     private let transcriptionProvider: any BuddyTranscriptionProvider
     private let audioEngine = AVAudioEngine()
+    /// Stable unique ID of the microphone the user picked in the panel.
+    /// `nil` means "follow the system default input device". Applied to the
+    /// audio engine at the start of each capture session (PTT + continuous).
+    private var preferredInputDeviceUniqueID: String?
     private var activeTranscriptionSession: (any BuddyStreamingTranscriptionSession)?
     private var activeStartSource: BuddyDictationStartSource?
     private var draftCallbacks: BuddyDictationDraftCallbacks?
@@ -296,6 +300,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
     func updateContextualKeyterms(_ contextualKeyterms: [String]) {
         self.contextualKeyterms = contextualKeyterms
+    }
+
+    /// Sets the microphone the dictation engine should capture from. `nil`
+    /// follows the system default. The preference is applied to the audio
+    /// engine at the start of the next capture session (it doesn't re-route a
+    /// recording that's already in progress).
+    func setPreferredInputDeviceUniqueID(_ uniqueID: String?) {
+        preferredInputDeviceUniqueID = uniqueID
     }
 
     func startPersistentDictationFromMicrophoneButton(
@@ -342,6 +354,14 @@ final class BuddyDictationManager: NSObject, ObservableObject {
     /// Distinct from `isDictationInProgress` — the dictation state
     /// machine is for push-to-talk; continuous mode runs in parallel.
     private(set) var isContinuousListeningActive: Bool = false
+
+    /// Set to `true` by CompanionManager while Cue's own TTS is playing
+    /// so the continuous-listening audio tap drops incoming buffers
+    /// instead of forwarding speaker echo back into the transcriber.
+    /// Read from the audio engine's tap thread; a stale read here is
+    /// benign (at worst a single audio frame leaks through), so we
+    /// don't bother with a lock.
+    nonisolated(unsafe) var isMicMutedForOwnTTSPlayback: Bool = false
     private var continuousListeningSessionAny: AnyObject?
 
     /// Start a hands-free continuous session. Opens the audio engine
@@ -401,6 +421,11 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             continuousListeningSessionAny = session
             isContinuousListeningActive = true
 
+            // Route capture to the user's chosen microphone (or the system
+            // default) before reading the input format, so the format matches
+            // the selected device. Engine is stopped here, as required.
+            MicrophoneDeviceManager.applyInputDevice(uniqueID: preferredInputDeviceUniqueID, to: audioEngine)
+
             // Tap the same input node the PTT path uses. The tap closure
             // routes each buffer to the active continuous session (when
             // there is one). Uses the same buffer size as PTT for parity.
@@ -409,6 +434,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
             inputNode.removeTap(onBus: 0)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
                 guard let self else { return }
+                // Drop buffers while Cue's own TTS is playing so the
+                // speakers' acoustic echo doesn't get transcribed as a
+                // new user utterance (the feedback loop that produced
+                // "sorry something went wrong" prompts).
+                if self.isMicMutedForOwnTTSPlayback {
+                    return
+                }
                 (self.continuousListeningSessionAny as? ContinuousListeningSession)?.appendAudioBuffer(buffer)
                 self.updateAudioPowerLevel(from: buffer)
             }
@@ -661,6 +693,10 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         self.activeTranscriptionSession = activeTranscriptionSession
         print("🎙️ BuddyDictationManager: provider ready, starting audio engine")
+
+        // Route capture to the user's chosen microphone (or the system default)
+        // before reading the input format. Engine is stopped here, as required.
+        MicrophoneDeviceManager.applyInputDevice(uniqueID: preferredInputDeviceUniqueID, to: audioEngine)
 
         let inputNode = audioEngine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)

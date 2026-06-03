@@ -97,7 +97,11 @@ final class ContinuousListeningSession {
     /// the case where SpeechDetector.results doesn't fire (which has
     /// been observed on macOS 26 betas).
     private var silenceTimer: Timer?
-    private static let silenceFinalizeSeconds: TimeInterval = 0.7
+    /// How long the transcript must be unchanged before we treat it as
+    /// end-of-utterance and flush. Too short and intra-sentence pauses
+    /// fragment one utterance into N Claude calls; too long and the
+    /// session feels sluggish. 1.0s is the goldilocks zone in practice.
+    private static let silenceFinalizeSeconds: TimeInterval = 1.0
 
     // MARK: - Init / lifecycle
 
@@ -276,7 +280,18 @@ final class ContinuousListeningSession {
         }
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        // Skip junk fragments: trailing punctuation only ("?"), or
+        // less than 2 word-ish characters. These come from the
+        // transcriber's per-utterance reset emitting just the trailing
+        // punctuation of the prior utterance, and sending them to
+        // Claude would burn a turn on "?". Always advance the cursor
+        // though, so we don't re-flush the same junk forever.
         lastFlushedTranscript = current
+        let alphanumericCount = trimmed.unicodeScalars.lazy.filter { CharacterSet.alphanumerics.contains($0) }.count
+        guard alphanumericCount >= 2 else {
+            print("⏭️ ContinuousListening: skipping trivial segment: \"\(trimmed)\"")
+            return
+        }
         print("📤 ContinuousListening: flushing segment: \"\(trimmed)\"")
         onSegmentFinalized(trimmed)
     }

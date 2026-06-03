@@ -333,10 +333,19 @@ final class CompanionManager: ObservableObject {
             if !self.streamingTTSQueue.isEmpty && self.voiceState == .processing {
                 self.voiceState = .responding
             }
+            // Mute the continuous-listening mic for the lifetime of
+            // this consumer so the speakers' echo doesn't get
+            // transcribed as a fresh user utterance.
+            self.buddyDictationManager.isMicMutedForOwnTTSPlayback = true
             while !Task.isCancelled, let sentence = self.streamingTTSQueue.first {
                 self.streamingTTSQueue.removeFirst()
                 await self.speakResponseThroughBestAvailableTTS(sentence)
             }
+            // Tail grace — speakers can echo for ~250ms after playback
+            // returns; keep the mic muted across that window so we
+            // don't pick up the trailing audio.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            self.buddyDictationManager.isMicMutedForOwnTTSPlayback = false
             self.streamingTTSConsumer = nil
         }
     }
@@ -349,6 +358,10 @@ final class CompanionManager: ObservableObject {
         streamingTTSConsumer = nil
         streamingTTSQueue.removeAll(keepingCapacity: true)
         streamingTTSCursor = 0
+        // Open the mic immediately on cancel/barge-in. If we leave the
+        // mute on, the continuous-listening session would miss the
+        // first ~300ms of the user's new utterance.
+        buddyDictationManager.isMicMutedForOwnTTSPlayback = false
     }
 
     // MARK: - Continuous-listening session
@@ -1370,9 +1383,23 @@ final class CompanionManager: ObservableObject {
             } catch is CancellationError {
                 // User spoke again — response was interrupted
             } catch {
-                CueAnalytics.trackResponseError(error: error.localizedDescription)
-                print("⚠️ Companion response error: \(error)")
-                speakResponseErrorFallback(underlyingError: error)
+                // Same idea, but for URLSession's flavor of cancel
+                // (Code=-999). The barge-in path cancels in-flight
+                // network requests, which surfaces here as a regular
+                // error — but it's expected, not a real failure, so
+                // we suppress the audible fallback. Also suppress if
+                // the generation moved on (another barge-in pathway
+                // cancelled us between the await and the catch).
+                let nsError = error as NSError
+                let isURLCancellation = nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+                let supersededByNewerCall = currentResponseGeneration != myGen
+                if isURLCancellation || supersededByNewerCall {
+                    print("⏭️ Companion response cancelled (gen=\(myGen), current=\(currentResponseGeneration)) — suppressing error TTS")
+                } else {
+                    CueAnalytics.trackResponseError(error: error.localizedDescription)
+                    print("⚠️ Companion response error: \(error)")
+                    speakResponseErrorFallback(underlyingError: error)
+                }
             }
 
             if !Task.isCancelled {
