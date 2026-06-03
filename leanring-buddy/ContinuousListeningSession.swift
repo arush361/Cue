@@ -246,10 +246,9 @@ final class ContinuousListeningSession {
     /// something errored and we want to bail fast.
     func cancel() {
         hasFinished = true
-        DispatchQueue.main.async {
-            self.silenceTimer?.invalidate()
-            self.silenceTimer = nil
-        }
+        let pendingSilenceTimer = silenceTimer
+        silenceTimer = nil
+        Task { @MainActor in pendingSilenceTimer?.invalidate() }
         bufferContinuation.finish()
         transcriberTask?.cancel()
         detectorTask?.cancel()
