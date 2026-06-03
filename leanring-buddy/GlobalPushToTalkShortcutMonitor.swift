@@ -23,19 +23,15 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
 
-    // MARK: - Double-tap detection
+    // MARK: - Continuous-session combo (Command + Control)
     //
-    // We watch for two quick press-release cycles in rapid succession
-    // (each "tap" is a hold of less than `maxTapHoldSeconds`; the gap
-    // between the first release and the second press must be less than
-    // `maxBetweenTapsSeconds`). When the heuristic matches on the
-    // second `.pressed`, we emit `.doublePressActivation` instead of
-    // `.pressed` so CompanionManager can route it to the continuous-
-    // session enter/exit toggle without triggering normal PTT.
-    private var lastPressedAt: Date?
-    private var lastReleasedAt: Date?
-    private static let maxTapHoldSeconds: TimeInterval = 0.300
-    private static let maxBetweenTapsSeconds: TimeInterval = 0.400
+    // Independent of the regular Ctrl+Option PTT chord, we also watch
+    // for the user pressing Command + Control together. On the 0→1
+    // transition of that combo (and only when Option is NOT also held,
+    // to avoid colliding with PTT), we emit
+    // `.continuousSessionToggle` which CompanionManager routes to
+    // enter/exit the hands-free continuous-listening session.
+    private var isCmdCtrlComboCurrentlyPressed = false
 
     deinit {
         stop()
@@ -134,42 +130,34 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         case .none:
             break
         case .pressed:
-            let now = Date()
-            // Detect "tap, then this press" — the previous cycle was a
-            // brief tap AND the gap since release is small. If yes,
-            // promote to `.doublePressActivation` instead of firing a
-            // regular `.pressed` (which would kick off normal PTT).
-            let wasRecentTap: Bool
-            if let lastPressed = lastPressedAt, let lastReleased = lastReleasedAt {
-                let lastHold = lastReleased.timeIntervalSince(lastPressed)
-                let gap = now.timeIntervalSince(lastReleased)
-                wasRecentTap = lastHold >= 0
-                    && lastHold < Self.maxTapHoldSeconds
-                    && gap >= 0
-                    && gap < Self.maxBetweenTapsSeconds
-            } else {
-                wasRecentTap = false
-            }
-            lastPressedAt = now
             isShortcutCurrentlyPressed = true
-            if wasRecentTap {
-                // Clear the cached tap so a third quick press doesn't
-                // re-fire activation immediately afterward.
-                lastReleasedAt = nil
-                lastPressedAt = nil
-                shortcutTransitionPublisher.send(.doublePressActivation)
-            } else {
-                shortcutTransitionPublisher.send(.pressed)
-            }
+            shortcutTransitionPublisher.send(.pressed)
         case .released:
-            lastReleasedAt = Date()
             isShortcutCurrentlyPressed = false
             shortcutTransitionPublisher.send(.released)
-        case .doublePressActivation:
-            // The underlying transition function never emits this case;
-            // it's synthesized in the .pressed branch above. Listed for
-            // exhaustiveness.
+        case .continuousSessionToggle:
+            // Synthesized below, not produced by the transition helper.
             break
+        }
+
+        // Cmd+Ctrl combo detection runs in parallel with the PTT chord
+        // above so toggling the continuous session doesn't interfere
+        // with PTT state. We only fire on the 0→1 transition of
+        // [.command, .control] (no Option, to avoid colliding with PTT
+        // which is Ctrl+Option) — and we ignore flag changes that
+        // aren't `.flagsChanged` because key-down/up events for letter
+        // keys held with these modifiers shouldn't toggle the session.
+        if eventType == .flagsChanged {
+            let flags = NSEvent.ModifierFlags(rawValue: UInt(event.flags.rawValue))
+                .intersection(.deviceIndependentFlagsMask)
+            let comboHeldNow = flags.contains([.command, .control])
+                && !flags.contains(.option)
+            if comboHeldNow && !isCmdCtrlComboCurrentlyPressed {
+                isCmdCtrlComboCurrentlyPressed = true
+                shortcutTransitionPublisher.send(.continuousSessionToggle)
+            } else if !comboHeldNow && isCmdCtrlComboCurrentlyPressed {
+                isCmdCtrlComboCurrentlyPressed = false
+            }
         }
 
         return Unmanaged.passUnretained(event)

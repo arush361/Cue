@@ -110,6 +110,12 @@ struct BlueCursorView: View {
     @State private var cursorPosition: CGPoint
     @State private var isCursorOnThisScreen: Bool
 
+    /// Drives the cursor blink while a continuous-listening session is
+    /// active. Toggled between `false` (full opacity) and `true`
+    /// (faded) by a `repeatForever(autoreverses: true)` animation
+    /// started in `.onChange(of: isContinuousSessionActive)`.
+    @State private var continuousSessionBlinkFaded: Bool = false
+
     init(screenFrame: CGRect, isFirstAppearance: Bool, companionManager: CompanionManager) {
         self.screenFrame = screenFrame
         self.isFirstAppearance = isFirstAppearance
@@ -308,7 +314,7 @@ struct BlueCursorView: View {
                 .rotationEffect(.degrees(triangleRotationDegrees))
                 .shadow(color: companionManager.currentCursorColor, radius: 8 + (buddyFlightScale - 1.0) * 20, x: 0, y: 0)
                 .scaleEffect(buddyFlightScale)
-                .opacity(buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0)
+                .opacity((buddyIsVisibleOnThisScreen && (companionManager.voiceState == .idle || companionManager.voiceState == .responding) ? cursorOpacity : 0) * continuousSessionOpacityMultiplier)
                 .position(cursorPosition)
                 .animation(
                     buddyNavigationMode == .followingCursor
@@ -329,14 +335,14 @@ struct BlueCursorView: View {
                 audioPowerLevel: companionManager.currentAudioPowerLevel,
                 cursorColor: companionManager.currentCursorColor
             )
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0)
+                .opacity((buddyIsVisibleOnThisScreen && companionManager.voiceState == .listening ? cursorOpacity : 0) * continuousSessionOpacityMultiplier)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
 
             // Blue spinner — shown while the AI is processing (transcription + Claude + waiting for TTS)
             BlueCursorSpinnerView(cursorColor: companionManager.currentCursorColor)
-                .opacity(buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0)
+                .opacity((buddyIsVisibleOnThisScreen && companionManager.voiceState == .processing ? cursorOpacity : 0) * continuousSessionOpacityMultiplier)
                 .position(cursorPosition)
                 .animation(.spring(response: 0.2, dampingFraction: 0.6, blendDuration: 0), value: cursorPosition)
                 .animation(.easeIn(duration: 0.15), value: companionManager.voiceState)
@@ -373,6 +379,21 @@ struct BlueCursorView: View {
             navigationAnimationTimer?.invalidate()
             companionManager.tearDownOnboardingVideo()
         }
+        .onChange(of: companionManager.isContinuousSessionActive) { isActive in
+            if isActive {
+                withAnimation(.easeInOut(duration: 0.65).repeatForever(autoreverses: true)) {
+                    continuousSessionBlinkFaded = true
+                }
+            } else {
+                // Cancel the repeating animation by setting the state
+                // through a non-repeating transaction. SwiftUI uses the
+                // most recent animation modifier; a plain assignment
+                // here lets the opacity settle at full.
+                withAnimation(.easeOut(duration: 0.2)) {
+                    continuousSessionBlinkFaded = false
+                }
+            }
+        }
         .onChange(of: companionManager.detectedElementScreenLocation) { newLocation in
             // When a UI element location is detected, navigate the buddy to
             // that position so it points at the element.
@@ -389,6 +410,15 @@ struct BlueCursorView: View {
 
             startNavigatingToElement(screenLocation: screenLocation)
         }
+    }
+
+    /// Pulses the cursor opacity during a continuous-listening session.
+    /// 1.0 when the session is off, smoothly oscillates between 1.0 and
+    /// ~0.3 when active (the animation is driven by
+    /// `continuousSessionBlinkFaded` in onChange of the session flag).
+    private var continuousSessionOpacityMultiplier: Double {
+        guard companionManager.isContinuousSessionActive else { return 1.0 }
+        return continuousSessionBlinkFaded ? 0.30 : 1.0
     }
 
     /// Whether the buddy triangle should be visible on this screen.
@@ -847,6 +877,121 @@ class OverlayWindowManager {
 
     func isShowingOverlay() -> Bool {
         return !overlayWindows.isEmpty
+    }
+
+    // MARK: - Continuous-session stop button
+
+    /// Floating pill windows shown in the top-right corner of every
+    /// screen while the continuous-listening session is active. The
+    /// cursor overlay is click-through; this window is not, so the
+    /// user can click "stop" to exit the session.
+    private var continuousSessionStopButtonWindows: [ContinuousSessionStopButtonWindow] = []
+
+    func showContinuousSessionStopButton(onScreens screens: [NSScreen], companionManager: CompanionManager) {
+        hideContinuousSessionStopButton()
+
+        for screen in screens {
+            let window = ContinuousSessionStopButtonWindow(screen: screen)
+            let view = ContinuousSessionStopButtonView(companionManager: companionManager)
+            let hostingView = NSHostingView(rootView: view)
+            hostingView.frame = NSRect(origin: .zero, size: window.frame.size)
+            window.contentView = hostingView
+            continuousSessionStopButtonWindows.append(window)
+            window.orderFrontRegardless()
+        }
+    }
+
+    func hideContinuousSessionStopButton() {
+        for window in continuousSessionStopButtonWindows {
+            window.orderOut(nil)
+            window.contentView = nil
+        }
+        continuousSessionStopButtonWindows.removeAll()
+    }
+}
+
+// MARK: - Continuous-session stop button window
+
+/// Small mouse-interactive floating window pinned to the top-right of
+/// a given screen. Created on session enter, destroyed on exit.
+final class ContinuousSessionStopButtonWindow: NSWindow {
+    private static let buttonSize = CGSize(width: 200, height: 40)
+    private static let edgeInset: CGFloat = 18
+
+    init(screen: NSScreen) {
+        let originX = screen.frame.maxX - Self.buttonSize.width - Self.edgeInset
+        let originY = screen.frame.maxY - Self.buttonSize.height - Self.edgeInset
+        super.init(
+            contentRect: NSRect(origin: CGPoint(x: originX, y: originY), size: Self.buttonSize),
+            styleMask: .borderless,
+            backing: .buffered,
+            defer: false
+        )
+
+        self.isOpaque = false
+        self.backgroundColor = .clear
+        self.level = .screenSaver
+        self.ignoresMouseEvents = false
+        self.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        self.isReleasedWhenClosed = false
+        self.hasShadow = false
+        self.hidesOnDeactivate = false
+    }
+
+    override var canBecomeKey: Bool { return false }
+    override var canBecomeMain: Bool { return false }
+}
+
+// MARK: - Continuous-session stop button SwiftUI view
+
+/// The pill UI shown in `ContinuousSessionStopButtonWindow`. A
+/// pulsing red dot, the label "Session started", and a stop icon.
+/// Tapping anywhere on the pill triggers a manual session exit.
+struct ContinuousSessionStopButtonView: View {
+    @ObservedObject var companionManager: CompanionManager
+    @State private var dotPulse: Bool = false
+    @State private var isHovering: Bool = false
+
+    var body: some View {
+        Button(action: {
+            companionManager.exitContinuousSession(reason: .manual)
+        }) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 9, height: 9)
+                    .opacity(dotPulse ? 1.0 : 0.35)
+                    .shadow(color: Color.red.opacity(0.6), radius: dotPulse ? 4 : 1)
+                    .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: dotPulse)
+
+                Text("Session started")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "stop.circle.fill")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.white.opacity(0.9))
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .fill(Color.black.opacity(isHovering ? 0.92 : 0.82))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(Color.red.opacity(isHovering ? 0.8 : 0.55), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.35), radius: 8, x: 0, y: 2)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            isHovering = hovering
+        }
+        .onAppear { dotPulse = true }
+        .padding(4)
     }
 }
 

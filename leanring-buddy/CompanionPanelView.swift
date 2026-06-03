@@ -174,7 +174,7 @@ struct CompanionPanelView: View {
 
     /// Pulsing red dot + countdown shown at the top of the panel while
     /// a hands-free continuous session is active. Tap to exit (alternate
-    /// to the double-press hotkey).
+    /// to the Cmd+Ctrl hotkey).
     private var continuousSessionIndicatorRow: some View {
         Button(action: {
             companionManager.exitContinuousSession(reason: .manual)

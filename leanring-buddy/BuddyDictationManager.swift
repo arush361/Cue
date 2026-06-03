@@ -84,12 +84,13 @@ enum BuddyPushToTalkShortcut {
         case none
         case pressed
         case released
-        /// Two quick taps within ~400ms (each hold <300ms). Used by
+        /// User pressed Command + Control together (without Option, so
+        /// it can't be confused with the regular PTT chord). Used by
         /// CompanionManager to enter/exit the continuous-listening
-        /// session. The monitor promotes a `.pressed` to this case
-        /// when the timing heuristic matches; consumers handle it
-        /// separately from the regular press-and-hold PTT path.
-        case doublePressActivation
+        /// session. The monitor emits this on the 0→1 transition of
+        /// the [.command, .control] combo and never re-fires until the
+        /// user releases at least one of those modifiers.
+        case continuousSessionToggle
     }
 
     private enum ShortcutEventType {

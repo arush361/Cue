@@ -338,14 +338,16 @@ final class CompanionManager: ObservableObject {
 
     // MARK: - Continuous-listening session
     //
-    // Entered by double-pressing Ctrl+Option (the shortcut monitor
-    // promotes the second .pressed within 400ms to .doublePressActivation).
-    // While active, the mic stays open across multiple utterances;
-    // SpeechDetector segments speech via VAD and each segment is sent
-    // to Claude as if it were a normal PTT exchange. Exits on:
-    //   1) another double-press (.doublePressActivation while active)
+    // Entered by pressing Command + Control together (the shortcut
+    // monitor watches for the [.command, .control] combo as a
+    // standalone modifier press and emits .continuousSessionToggle on
+    // 0→1 transitions). While active, the mic stays open across
+    // multiple utterances; SpeechDetector segments speech via VAD and
+    // each segment is sent to Claude as if it were a normal PTT
+    // exchange. Exits on:
+    //   1) another Cmd+Ctrl press (.continuousSessionToggle while active)
     //   2) the max-duration timer firing (default 10 min)
-    //   3) the user clicking the menu-bar header indicator
+    //   3) the user clicking the menu-bar header or on-screen stop button
     //   4) a fatal error from the session
 
     /// User-visible session state for the menu-bar countdown + cursor
@@ -360,9 +362,9 @@ final class CompanionManager: ObservableObject {
 
     /// Reasons the session ended — surfaced in logs for diagnostics.
     enum ContinuousSessionExitReason: String {
-        case doublePress
+        case shortcut        // Cmd+Ctrl pressed again while active
         case timeout
-        case manual          // menu-bar indicator click
+        case manual          // menu-bar indicator or on-screen stop button click
         case error
     }
 
@@ -383,6 +385,15 @@ final class CompanionManager: ObservableObject {
         isContinuousSessionActive = true
         continuousSessionEndsAt = endsAt
         print("🎤 Continuous session: started (timeout \(Int(Self.continuousSessionMaxDurationSeconds))s)")
+
+        // Floating top-right stop button on every screen. Visible until
+        // exitContinuousSession tears it down. The cursor overlay is
+        // click-through; this window isn't, so the user can click
+        // "stop" anywhere even with Cue's panel closed.
+        overlayWindowManager.showContinuousSessionStopButton(
+            onScreens: NSScreen.screens,
+            companionManager: self
+        )
 
         // Schedule the safety timeout. The Task sleeps for the cap,
         // then exits the session on the main actor. exitContinuousSession
@@ -434,6 +445,9 @@ final class CompanionManager: ObservableObject {
         continuousSessionTimeoutTask = nil
         isContinuousSessionActive = false
         continuousSessionEndsAt = nil
+
+        // Remove the floating top-right stop button.
+        overlayWindowManager.hideContinuousSessionStopButton()
 
         // Tear down the mic + analyzer.
         buddyDictationManager.stopContinuousListening()
@@ -1042,12 +1056,12 @@ final class CompanionManager: ObservableObject {
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
-        case .doublePressActivation:
-            // Two quick taps of Ctrl+Option = toggle the hands-free
-            // continuous-listening session. Pressed-then-released
-            // single-tap behavior is unchanged.
+        case .continuousSessionToggle:
+            // User pressed Command + Control = toggle the hands-free
+            // continuous-listening session. PTT (Ctrl+Option) behavior
+            // is unaffected because Cmd+Ctrl is a different chord.
             if isContinuousSessionActive {
-                exitContinuousSession(reason: .doublePress)
+                exitContinuousSession(reason: .shortcut)
             } else {
                 enterContinuousSession()
             }
