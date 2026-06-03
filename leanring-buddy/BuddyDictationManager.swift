@@ -335,6 +335,115 @@ final class BuddyDictationManager: NSObject, ObservableObject {
         stopPushToTalk(expectedStartSource: .keyboardShortcut)
     }
 
+    // MARK: - Continuous-listening session
+
+    /// True while a continuous-listening session owns the audio engine.
+    /// Distinct from `isDictationInProgress` — the dictation state
+    /// machine is for push-to-talk; continuous mode runs in parallel.
+    private(set) var isContinuousListeningActive: Bool = false
+    private var continuousListeningSessionAny: AnyObject?
+
+    /// Start a hands-free continuous session. Opens the audio engine
+    /// (sharing the same input node as PTT but a different consumer),
+    /// pipes buffers into a ContinuousListeningSession, and forwards
+    /// its three callbacks to the orchestrator. Stops on
+    /// `stopContinuousListening()`; release of the hotkey is intentionally
+    /// ignored in this mode.
+    @MainActor
+    func startContinuousListening(
+        onSegmentFinalized: @escaping (String) -> Void,
+        onSpeechStarted: @escaping () -> Void,
+        onError: @escaping (Error) -> Void
+    ) async {
+        // The continuous session relies on macOS 26 SpeechAnalyzer +
+        // SpeechDetector. Fall back to a no-op + error callback on
+        // older OS so the caller can degrade gracefully.
+        guard #available(macOS 26.0, *) else {
+            onError(BuddyDictationContinuousListeningError(
+                message: "Continuous listening requires macOS 26 or later."
+            ))
+            return
+        }
+
+        // If push-to-talk happens to be active, stop it cleanly so the
+        // continuous session can take over the mic.
+        if isDictationInProgress {
+            stopPushToTalk(expectedStartSource: .keyboardShortcut)
+        }
+        guard !isContinuousListeningActive else { return }
+
+        // Permission gating — same one used by PTT, since SpeechAnalyzer
+        // requires Speech Recognition permission and we capture mic audio.
+        guard await requestMicrophoneAndSpeechPermissionsWithoutDuplicatePrompts() else {
+            print("🎤 ContinuousListening: permissions missing or denied")
+            onError(BuddyDictationContinuousListeningError(
+                message: "Microphone or speech-recognition permission denied."
+            ))
+            return
+        }
+
+        let bestLocale = await MacOSSpeechAnalyzerTranscriptionProvider.bestInstalledLocaleForContinuousMode()
+        guard let locale = bestLocale else {
+            onError(BuddyDictationContinuousListeningError(
+                message: "No dictation locale installed. Add one in System Settings → Accessibility → Spoken Content."
+            ))
+            return
+        }
+
+        do {
+            let session = try await ContinuousListeningSession(locale: locale)
+            session.onSegmentFinalized = onSegmentFinalized
+            session.onSpeechStarted = onSpeechStarted
+            session.onError = { error in
+                onError(error)
+            }
+            continuousListeningSessionAny = session
+            isContinuousListeningActive = true
+
+            // Tap the same input node the PTT path uses. The tap closure
+            // routes each buffer to the active continuous session (when
+            // there is one). Uses the same buffer size as PTT for parity.
+            let inputNode = audioEngine.inputNode
+            let inputFormat = inputNode.outputFormat(forBus: 0)
+            inputNode.removeTap(onBus: 0)
+            inputNode.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
+                guard let self else { return }
+                (self.continuousListeningSessionAny as? ContinuousListeningSession)?.appendAudioBuffer(buffer)
+                self.updateAudioPowerLevel(from: buffer)
+            }
+
+            audioEngine.prepare()
+            try audioEngine.start()
+            print("🎤 ContinuousListening: audio engine started")
+        } catch {
+            print("⚠️ ContinuousListening: start failed: \(error.localizedDescription)")
+            isContinuousListeningActive = false
+            continuousListeningSessionAny = nil
+            onError(error)
+        }
+    }
+
+    /// Stop a continuous-listening session. Tears down the audio engine
+    /// and asks the session to finalize through end-of-input so any
+    /// in-flight transcript flushes one last time.
+    func stopContinuousListening() {
+        guard isContinuousListeningActive else { return }
+        print("🎤 ContinuousListening: stop requested")
+
+        if audioEngine.isRunning {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
+
+        let session = continuousListeningSessionAny
+        continuousListeningSessionAny = nil
+        isContinuousListeningActive = false
+
+        if #available(macOS 26.0, *), let typed = session as? ContinuousListeningSession {
+            Task { await typed.finish() }
+        }
+    }
+
     func cancelCurrentDictation(preserveDraftText: Bool = true) {
         pendingStartRequestIdentifier = UUID()
 
@@ -869,4 +978,13 @@ final class BuddyDictationManager: NSObject, ObservableObject {
 
         return fallback
     }
+}
+
+/// Error surfaced by `startContinuousListening` when a precondition
+/// fails (wrong OS, denied permission, no installed locale). The
+/// orchestrator catches it via the onError callback and exits the
+/// continuous session with reason `.error`.
+struct BuddyDictationContinuousListeningError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
 }

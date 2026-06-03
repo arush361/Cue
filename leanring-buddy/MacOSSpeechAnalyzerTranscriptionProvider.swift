@@ -66,6 +66,14 @@ final class MacOSSpeechAnalyzerTranscriptionProvider: BuddyTranscriptionProvider
     /// `startStreamingSession` (which is async) so we get the real check
     /// without blocking the sync factory path.
     private static func bestInstalledLocale() async -> Locale? {
+        await bestInstalledLocaleForContinuousMode()
+    }
+
+    /// Public locale-resolution helper used by the continuous-listening
+    /// path (BuddyDictationManager.startContinuousListening) so we don't
+    /// duplicate the candidate-locale + DictationTranscriber.installedLocales
+    /// dance across two call sites.
+    static func bestInstalledLocaleForContinuousMode() async -> Locale? {
         let installed = await DictationTranscriber.installedLocales
         for candidate in candidateLocales {
             if installed.contains(where: { $0.identifier == candidate.identifier }) {
