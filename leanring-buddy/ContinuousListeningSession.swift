@@ -279,9 +279,11 @@ final class ContinuousListeningSession {
             withTimeInterval: Self.silenceFinalizeSeconds,
             repeats: false
         ) { [weak self] _ in
-            guard let self else { return }
-            print("⏱️ ContinuousListening: silence-flush fired")
-            self.flushSegmentIfAny()
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                print("⏱️ ContinuousListening: silence-flush fired")
+                self.flushSegmentIfAny()
+            }
         }
     }
 }
