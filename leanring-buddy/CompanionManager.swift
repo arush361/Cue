@@ -107,19 +107,63 @@ final class CompanionManager: ObservableObject {
     /// See README "Setup" section for both paths.
     private static let workerBaseURL = "http://localhost:8787"
 
-    /// Claude API client. Prefers direct-to-Anthropic when ANTHROPIC_API_KEY
-    /// is in the process environment (set via Xcode scheme → Run →
-    /// Arguments → Environment Variables, so it never gets bundled).
-    /// Falls back to the Cloudflare Worker proxy when the env var is empty.
-    private lazy var claudeAPI: ClaudeAPI = {
+    /// Claude API client. Priority: Keychain-saved key (set via the menu
+    /// bar panel's API Key row) → ANTHROPIC_API_KEY environment variable
+    /// (Xcode scheme Run > Arguments) → Cloudflare Worker proxy fallback.
+    /// Rebuilt on the fly whenever the user saves or clears their key —
+    /// see `rebuildClaudeAPI()`.
+    private var claudeAPI: ClaudeAPI = ClaudeAPI(proxyURL: "\(workerBaseURL)/chat", model: "claude-sonnet-4-6")
+
+    /// True iff the user has saved a key in Keychain via the panel UI.
+    /// The panel binds against this to swap between "Add API key" and
+    /// "Replace / Clear" states.
+    @Published private(set) var hasSavedAnthropicAPIKey: Bool = AnthropicAPIKeychain.hasSavedKey
+
+    /// Last 4 characters of the saved key, e.g. "abcd". Surfaced in the
+    /// UI as "sk-ant-…abcd" so users can recognize which key is loaded
+    /// without ever seeing the full value.
+    @Published private(set) var savedAnthropicAPIKeyLastFour: String? = AnthropicAPIKeychain.savedKeyLastFour
+
+    /// Save (or replace) the Anthropic API key. Rebuilds the ClaudeAPI
+    /// client so the next push-to-talk uses the new key immediately —
+    /// no app restart needed.
+    @discardableResult
+    func saveAnthropicAPIKey(_ apiKey: String) -> Bool {
+        let success = AnthropicAPIKeychain.save(apiKey)
+        if success {
+            hasSavedAnthropicAPIKey = AnthropicAPIKeychain.hasSavedKey
+            savedAnthropicAPIKeyLastFour = AnthropicAPIKeychain.savedKeyLastFour
+            rebuildClaudeAPI()
+        }
+        return success
+    }
+
+    /// Remove the saved Anthropic API key. The app falls back to the env
+    /// var or proxy on the next push-to-talk.
+    func clearSavedAnthropicAPIKey() {
+        AnthropicAPIKeychain.clear()
+        hasSavedAnthropicAPIKey = false
+        savedAnthropicAPIKeyLastFour = nil
+        rebuildClaudeAPI()
+    }
+
+    /// Rebuilds `claudeAPI` from the current state (Keychain → env →
+    /// proxy). Called at init and whenever the user changes their key.
+    private func rebuildClaudeAPI() {
+        if let savedKey = AnthropicAPIKeychain.load(), !savedKey.isEmpty {
+            print("🌐 Claude API: direct mode (Keychain)")
+            claudeAPI = ClaudeAPI(directAnthropicAPIKey: savedKey, model: selectedModel)
+            return
+        }
         if let anthropicAPIKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"],
            !anthropicAPIKey.isEmpty {
             print("🌐 Claude API: direct mode (env var ANTHROPIC_API_KEY)")
-            return ClaudeAPI(directAnthropicAPIKey: anthropicAPIKey, model: selectedModel)
+            claudeAPI = ClaudeAPI(directAnthropicAPIKey: anthropicAPIKey, model: selectedModel)
+            return
         }
         print("🌐 Claude API: proxy mode (fallback to \(Self.workerBaseURL))")
-        return ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
-    }()
+        claudeAPI = ClaudeAPI(proxyURL: "\(Self.workerBaseURL)/chat", model: selectedModel)
+    }
 
     /// Primary on-device TTS: Kokoro-82M v1.0 via ONNX Runtime. Higher
     /// quality than AVSpeechSynthesizer but depends on the ONNX Runtime
@@ -374,9 +418,10 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
-        // Eagerly touch the Claude API so its TLS warmup handshake completes
-        // well before the onboarding demo fires at ~40s into the video.
-        _ = claudeAPI
+        // Resolve the Anthropic key (Keychain → env var → proxy) and seed
+        // claudeAPI before anything triggers it. Also kicks the TLS warmup
+        // handshake so it's done before the onboarding demo at ~40s.
+        rebuildClaudeAPI()
 
         // If the user already completed onboarding AND all permissions are
         // still granted, show the cursor overlay immediately. If permissions

@@ -13,6 +13,17 @@ import SwiftUI
 struct CompanionPanelView: View {
     @ObservedObject var companionManager: CompanionManager
     @State private var emailInput: String = ""
+    @State private var isAPIKeyRowExpanded: Bool = false
+    @State private var apiKeyInput: String = ""
+    @State private var apiKeySaveStatus: APIKeySaveStatus = .idle
+
+    /// Brief status to render under the field after a save / clear attempt.
+    enum APIKeySaveStatus: Equatable {
+        case idle
+        case saved
+        case failed
+        case cleared
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -286,6 +297,135 @@ struct CompanionPanelView: View {
                 screenContentPermissionRow
             }
 
+            anthropicAPIKeyRow
+        }
+    }
+
+    // MARK: - Anthropic API Key Row
+
+    /// Expandable row inside the PERMISSIONS settings section that lets
+    /// the user paste + save their Anthropic API key. The key is stored
+    /// in macOS Keychain via `AnthropicAPIKeychain`; the full value is
+    /// never re-displayed — only "sk-ant-…XXXX" (last 4) once saved.
+    /// On save, CompanionManager rebuilds the ClaudeAPI client so the
+    /// next push-to-talk uses the new key immediately.
+    private var anthropicAPIKeyRow: some View {
+        VStack(spacing: 6) {
+            // Collapsed header — tap to expand.
+            Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isAPIKeyRowExpanded.toggle() } }) {
+                HStack {
+                    HStack(spacing: 8) {
+                        Image(systemName: "key.fill")
+                            .foregroundColor(DS.Colors.textSecondary)
+                            .frame(width: 14)
+                        Text("API key")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(DS.Colors.textPrimary)
+                    }
+                    Spacer()
+                    if companionManager.hasSavedAnthropicAPIKey,
+                       let lastFour = companionManager.savedAnthropicAPIKeyLastFour {
+                        Text("sk-ant-…\(lastFour)")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    } else {
+                        Text("not set")
+                            .font(.system(size: 11))
+                            .foregroundColor(DS.Colors.textTertiary)
+                    }
+                    Image(systemName: isAPIKeyRowExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.vertical, 8)
+                .padding(.horizontal, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isAPIKeyRowExpanded {
+                VStack(alignment: .leading, spacing: 8) {
+                    SecureField("sk-ant-…", text: $apiKeyInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.system(size: 12, design: .monospaced))
+                        .disableAutocorrection(true)
+
+                    HStack(spacing: 8) {
+                        Button(action: saveAPIKey) {
+                            Text("Save")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 6)
+                                .background(DS.Colors.accent)
+                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        if companionManager.hasSavedAnthropicAPIKey {
+                            Button(action: clearAPIKey) {
+                                Text("Clear saved key")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(DS.Colors.textSecondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+
+                        Spacer()
+
+                        switch apiKeySaveStatus {
+                        case .idle:
+                            EmptyView()
+                        case .saved:
+                            Text("✓ Saved")
+                                .font(.system(size: 11))
+                                .foregroundColor(.green)
+                        case .failed:
+                            Text("Save failed")
+                                .font(.system(size: 11))
+                                .foregroundColor(.red)
+                        case .cleared:
+                            Text("Cleared")
+                                .font(.system(size: 11))
+                                .foregroundColor(DS.Colors.textTertiary)
+                        }
+                    }
+
+                    Text("Stored in macOS Keychain. Never shown after save.")
+                        .font(.system(size: 10))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 4)
+                .padding(.bottom, 6)
+            }
+        }
+    }
+
+    private func saveAPIKey() {
+        let trimmed = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let didSave = companionManager.saveAnthropicAPIKey(trimmed)
+        apiKeySaveStatus = didSave ? .saved : .failed
+        if didSave { apiKeyInput = "" }
+        // Auto-clear the status pill after a moment so the row settles.
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if apiKeySaveStatus == .saved || apiKeySaveStatus == .failed {
+                apiKeySaveStatus = .idle
+            }
+        }
+    }
+
+    private func clearAPIKey() {
+        companionManager.clearSavedAnthropicAPIKey()
+        apiKeyInput = ""
+        apiKeySaveStatus = .cleared
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            if apiKeySaveStatus == .cleared {
+                apiKeySaveStatus = .idle
+            }
         }
     }
 
