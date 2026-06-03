@@ -110,6 +110,18 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
     private let onError: (Error) -> Void
     private var resultsTask: Task<Void, Never>?
 
+    /// Format SpeechAnalyzer requires for our chosen modules. Each incoming
+    /// AVAudioPCMBuffer is converted to this format before being yielded.
+    /// Apple's docs: "the analyzer does not transparently upsample,
+    /// downsample, or convert audio input." Failure mode if we skip this:
+    /// `Failed precondition: Audio sample data must be 16-bit signed integers`.
+    private let requiredAudioFormat: AVAudioFormat
+
+    /// Reused per buffer; lazily created the first time a real source
+    /// format arrives in `appendAudioBuffer` (we don't know it at init
+    /// time because the dictation manager owns AVAudioEngine).
+    private var audioConverter: AVAudioConverter?
+
     private var latestRecognizedText = ""
     private var hasRequestedFinalTranscript = false
     private var hasDeliveredFinalTranscript = false
@@ -132,9 +144,31 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
         self.transcriber = DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
         self.analyzer = SpeechAnalyzer(modules: [transcriber])
 
+        // (1) Ask the system to download/allocate any dictation assets the
+        //     transcriber needs for this locale. Without this we hit:
+        //       "Cannot use modules with unallocated locales [en_CA]"
+        //     The request returns nil if everything is already present, or
+        //     an in-progress download object otherwise. First-run shows a
+        //     system download UI; subsequent runs hit the cache.
+        if let installationRequest = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+            try await installationRequest.downloadAndInstall()
+        }
+
+        // (2) Discover the audio format the modules want and stash it. We
+        //     convert each incoming AVAudioPCMBuffer to this format before
+        //     yielding to the analyzer. Returns nil when modules need more
+        //     assets installed — in practice (1) already handled that.
+        guard let pickedFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+            throw MacOSSpeechAnalyzerTranscriptionProviderError(
+                message: "SpeechAnalyzer could not pick an audio format for the chosen modules."
+            )
+        }
+        self.requiredAudioFormat = pickedFormat
+
         // Feed analyzer through an AsyncStream of AnalyzerInput. Each
-        // AVAudioPCMBuffer the dictation manager hands us gets wrapped
-        // into an AnalyzerInput inside `appendAudioBuffer`.
+        // AVAudioPCMBuffer the dictation manager hands us gets converted
+        // to `requiredAudioFormat` and wrapped in AnalyzerInput inside
+        // `appendAudioBuffer`.
         let (bufferStream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
         self.bufferContinuation = continuation
 
@@ -179,7 +213,64 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
 
     func appendAudioBuffer(_ audioBuffer: AVAudioPCMBuffer) {
         guard !hasRequestedFinalTranscript else { return }
-        bufferContinuation.yield(AnalyzerInput(buffer: audioBuffer))
+
+        // Fast path: source already matches what the analyzer wants
+        // (rare — AVAudioEngine typically hands us Float32 even when the
+        // tap is requested in 16-bit).
+        if audioBuffer.format.isEqual(requiredAudioFormat) {
+            bufferContinuation.yield(AnalyzerInput(buffer: audioBuffer))
+            return
+        }
+
+        // Lazy-create the converter once we see the actual source format.
+        // It's the same converter for every subsequent buffer in the session.
+        if audioConverter == nil {
+            audioConverter = AVAudioConverter(from: audioBuffer.format, to: requiredAudioFormat)
+        }
+        guard let audioConverter else { return }
+
+        // Allocate an output buffer sized for the worst-case sample-rate
+        // ratio. AVAudioConverter handles the underlying interleave / int16
+        // packing the analyzer requires.
+        let outputFrameCapacity = AVAudioFrameCount(
+            Double(audioBuffer.frameLength)
+                * (requiredAudioFormat.sampleRate / audioBuffer.format.sampleRate)
+        ) + 1
+        guard
+            let convertedBuffer = AVAudioPCMBuffer(
+                pcmFormat: requiredAudioFormat,
+                frameCapacity: outputFrameCapacity
+            )
+        else { return }
+
+        var conversionError: NSError?
+        var didProvideInput = false
+        let status = audioConverter.convert(
+            to: convertedBuffer,
+            error: &conversionError
+        ) { _, inputStatus in
+            // Hand the source buffer once, then signal end-of-stream so the
+            // converter flushes. The closure may be called multiple times.
+            if didProvideInput {
+                inputStatus.pointee = .endOfStream
+                return nil
+            }
+            didProvideInput = true
+            inputStatus.pointee = .haveData
+            return audioBuffer
+        }
+
+        if status == .error || conversionError != nil {
+            // Don't crash — just drop this buffer and continue. The next
+            // buffer gets a fresh attempt. If conversion fails repeatedly
+            // the user will see no transcript and we'll surface via onError
+            // from the results task.
+            return
+        }
+
+        if convertedBuffer.frameLength > 0 {
+            bufferContinuation.yield(AnalyzerInput(buffer: convertedBuffer))
+        }
     }
 
     func requestFinalTranscript() {
