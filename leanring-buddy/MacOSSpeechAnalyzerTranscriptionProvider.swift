@@ -164,6 +164,7 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
             )
         }
         self.requiredAudioFormat = pickedFormat
+        print("🎙️ SpeechAnalyzer: requiredAudioFormat = \(pickedFormat)")
 
         // Feed analyzer through an AsyncStream of AnalyzerInput. Each
         // AVAudioPCMBuffer the dictation manager hands us gets converted
@@ -183,24 +184,29 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
 
         try await analyzer.start(inputSequence: bufferStream)
 
-        // Drain partial + final results. SpeechAnalyzer is an actor and
-        // AsyncSequence iteration is cooperatively scheduled, so it's
-        // fine to spin this off on a detached task.
+        // Drain results. We treat EVERY result's text as the latest
+        // running transcript (matches Apple's own sample code — there's
+        // no documented `isFinal` flag on DictationTranscriber.Result).
+        // When the user releases push-to-talk, the dictation manager
+        // calls `requestFinalTranscript()` which closes the input stream
+        // and triggers `finalizeAndFinishThroughEndOfInput()`. That ends
+        // the results AsyncSequence; we then flush whatever text we have
+        // as the final transcript.
         resultsTask = Task { [weak self] in
             guard let self else { return }
+            var resultCount = 0
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
+                    resultCount += 1
                     self.latestRecognizedText = text
-                    if result.isFinal {
-                        self.deliverFinalTranscriptIfNeeded(text)
-                    } else {
-                        self.onTranscriptUpdate(text)
-                    }
+                    print("🎙️ SpeechAnalyzer result #\(resultCount): \"\(text)\"")
+                    self.onTranscriptUpdate(text)
                 }
-                // Results stream completed without a final-flagged result —
-                // common when finalizeAndFinish was called. Flush latest text.
-                if self.hasRequestedFinalTranscript {
+                print("🎙️ SpeechAnalyzer: results stream completed after \(resultCount) results. Final text: \"\(self.latestRecognizedText)\"")
+                // Results stream completed (analyzer was finalized). Flush
+                // latest text as the final transcript.
+                if !self.latestRecognizedText.isEmpty {
                     self.deliverFinalTranscriptIfNeeded(self.latestRecognizedText)
                 }
             } catch {
@@ -211,14 +217,28 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
         }
     }
 
+    /// Diagnostic counters so we can see audio flow in the console when
+    /// transcription doesn't appear to be happening.
+    private var buffersReceived = 0
+    private var buffersYielded = 0
+    private var buffersDroppedFromConversion = 0
+    private var hasLoggedFirstBuffer = false
+
     func appendAudioBuffer(_ audioBuffer: AVAudioPCMBuffer) {
         guard !hasRequestedFinalTranscript else { return }
+        buffersReceived += 1
+
+        if !hasLoggedFirstBuffer {
+            hasLoggedFirstBuffer = true
+            print("🎙️ SpeechAnalyzer: first audio buffer arrived, source format = \(audioBuffer.format), frameLength = \(audioBuffer.frameLength)")
+        }
 
         // Fast path: source already matches what the analyzer wants
         // (rare — AVAudioEngine typically hands us Float32 even when the
         // tap is requested in 16-bit).
         if audioBuffer.format.isEqual(requiredAudioFormat) {
             bufferContinuation.yield(AnalyzerInput(buffer: audioBuffer))
+            buffersYielded += 1
             return
         }
 
@@ -226,8 +246,12 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
         // It's the same converter for every subsequent buffer in the session.
         if audioConverter == nil {
             audioConverter = AVAudioConverter(from: audioBuffer.format, to: requiredAudioFormat)
+            print("🎙️ SpeechAnalyzer: created converter \(audioBuffer.format.sampleRate)Hz/\(audioBuffer.format.commonFormat.rawValue) → \(requiredAudioFormat.sampleRate)Hz/\(requiredAudioFormat.commonFormat.rawValue), converter = \(audioConverter == nil ? "FAILED" : "ok")")
         }
-        guard let audioConverter else { return }
+        guard let audioConverter else {
+            buffersDroppedFromConversion += 1
+            return
+        }
 
         // Allocate an output buffer sized for the worst-case sample-rate
         // ratio. AVAudioConverter handles the underlying interleave / int16
@@ -241,7 +265,10 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
                 pcmFormat: requiredAudioFormat,
                 frameCapacity: outputFrameCapacity
             )
-        else { return }
+        else {
+            buffersDroppedFromConversion += 1
+            return
+        }
 
         var conversionError: NSError?
         var didProvideInput = false
@@ -261,25 +288,27 @@ final class MacOSSpeechAnalyzerTranscriptionSession: BuddyStreamingTranscription
         }
 
         if status == .error || conversionError != nil {
-            // Don't crash — just drop this buffer and continue. The next
-            // buffer gets a fresh attempt. If conversion fails repeatedly
-            // the user will see no transcript and we'll surface via onError
-            // from the results task.
+            if buffersDroppedFromConversion == 0 {
+                print("⚠️ SpeechAnalyzer: first conversion error — status=\(status.rawValue), err=\(conversionError?.localizedDescription ?? "nil")")
+            }
+            buffersDroppedFromConversion += 1
             return
         }
 
         if convertedBuffer.frameLength > 0 {
             bufferContinuation.yield(AnalyzerInput(buffer: convertedBuffer))
+            buffersYielded += 1
         }
     }
 
     func requestFinalTranscript() {
         guard !hasRequestedFinalTranscript else { return }
         hasRequestedFinalTranscript = true
+        print("🎙️ SpeechAnalyzer: requestFinalTranscript — received=\(buffersReceived), yielded=\(buffersYielded), dropped=\(buffersDroppedFromConversion)")
         bufferContinuation.finish()
         Task { [analyzer] in
             do { try await analyzer.finalizeAndFinishThroughEndOfInput() }
-            catch { /* ignore — the results task surfaces any error */ }
+            catch { print("⚠️ SpeechAnalyzer: finalizeAndFinishThroughEndOfInput threw \(error)") }
         }
     }
 
