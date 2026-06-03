@@ -336,6 +336,117 @@ final class CompanionManager: ObservableObject {
         streamingTTSCursor = 0
     }
 
+    // MARK: - Continuous-listening session
+    //
+    // Entered by double-pressing Ctrl+Option (the shortcut monitor
+    // promotes the second .pressed within 400ms to .doublePressActivation).
+    // While active, the mic stays open across multiple utterances;
+    // SpeechDetector segments speech via VAD and each segment is sent
+    // to Claude as if it were a normal PTT exchange. Exits on:
+    //   1) another double-press (.doublePressActivation while active)
+    //   2) the max-duration timer firing (default 10 min)
+    //   3) the user clicking the menu-bar header indicator
+    //   4) a fatal error from the session
+
+    /// User-visible session state for the menu-bar countdown + cursor
+    /// indicator. SwiftUI binds against these.
+    @Published private(set) var isContinuousSessionActive: Bool = false
+    @Published private(set) var continuousSessionEndsAt: Date?
+
+    /// Hard cap on a single continuous session. Acts as cost / safety
+    /// guardrail in case the user forgets to exit. Default 10 minutes;
+    /// adjustable as a follow-up via the menu-bar panel if desired.
+    private static let continuousSessionMaxDurationSeconds: TimeInterval = 600
+
+    /// Reasons the session ended — surfaced in logs for diagnostics.
+    enum ContinuousSessionExitReason: String {
+        case doublePress
+        case timeout
+        case manual          // menu-bar indicator click
+        case error
+    }
+
+    private var continuousSessionTimeoutTask: Task<Void, Never>?
+
+    func enterContinuousSession() {
+        guard !isContinuousSessionActive else { return }
+
+        // Tear down any in-flight PTT response state first — entering
+        // continuous mode mid-response would otherwise create a weird
+        // hybrid where the old response is still streaming.
+        currentResponseTask?.cancel()
+        resetStreamingTTS()
+        stopAllTTSPlayback()
+        streamingResponseText = ""
+
+        let endsAt = Date().addingTimeInterval(Self.continuousSessionMaxDurationSeconds)
+        isContinuousSessionActive = true
+        continuousSessionEndsAt = endsAt
+        print("🎤 Continuous session: started (timeout \(Int(Self.continuousSessionMaxDurationSeconds))s)")
+
+        // Schedule the safety timeout. The Task sleeps for the cap,
+        // then exits the session on the main actor. exitContinuousSession
+        // cancels this task on every other exit reason.
+        continuousSessionTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.continuousSessionMaxDurationSeconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                self?.exitContinuousSession(reason: .timeout)
+            }
+        }
+
+        // Hand off to the dictation manager to actually open the mic.
+        // The dictation manager subscribes to the session's callbacks
+        // and forwards each finalized segment back here via
+        // `sendTranscriptToClaudeWithScreenshot`.
+        Task { @MainActor in
+            await buddyDictationManager.startContinuousListening(
+                onSegmentFinalized: { [weak self] segmentText in
+                    Task { @MainActor in
+                        guard let self else { return }
+                        CueAnalytics.trackUserMessageSent(transcript: segmentText)
+                        self.sendTranscriptToClaudeWithScreenshot(transcript: segmentText)
+                    }
+                },
+                onSpeechStarted: { [weak self] in
+                    Task { @MainActor in
+                        // Barge-in: if Cue is currently speaking when the
+                        // user starts talking again, cut TTS so the user
+                        // isn't fighting it.
+                        self?.muteCurrentTTSPlayback()
+                    }
+                },
+                onError: { [weak self] error in
+                    Task { @MainActor in
+                        print("⚠️ Continuous session error: \(error.localizedDescription)")
+                        self?.exitContinuousSession(reason: .error)
+                    }
+                }
+            )
+        }
+    }
+
+    func exitContinuousSession(reason: ContinuousSessionExitReason) {
+        guard isContinuousSessionActive else { return }
+        print("🎤 Continuous session: ended (reason: \(reason.rawValue))")
+
+        continuousSessionTimeoutTask?.cancel()
+        continuousSessionTimeoutTask = nil
+        isContinuousSessionActive = false
+        continuousSessionEndsAt = nil
+
+        // Tear down the mic + analyzer.
+        buddyDictationManager.stopContinuousListening()
+
+        // Don't kill in-flight TTS for clean exits — user might want to
+        // hear the last response finish. For errors, take everything down.
+        if reason == .error {
+            currentResponseTask?.cancel()
+            resetStreamingTTS()
+            stopAllTTSPlayback()
+        }
+    }
+
     /// Find the next sentence-end index >= `from`, requiring the
     /// sentence to be at least `streamingTTSMinSentenceChars` long and
     /// the terminator to be followed by whitespace or end-of-input
@@ -931,12 +1042,30 @@ final class CompanionManager: ObservableObject {
             pendingKeyboardShortcutStartTask?.cancel()
             pendingKeyboardShortcutStartTask = nil
             buddyDictationManager.stopPushToTalkFromKeyboardShortcut()
+        case .doublePressActivation:
+            // Two quick taps of Ctrl+Option = toggle the hands-free
+            // continuous-listening session. Pressed-then-released
+            // single-tap behavior is unchanged.
+            if isContinuousSessionActive {
+                exitContinuousSession(reason: .doublePress)
+            } else {
+                enterContinuousSession()
+            }
         case .none:
             break
         }
     }
 
     // MARK: - Companion Prompt
+
+    /// Appended to companionVoiceResponseSystemPrompt when the user
+    /// is in a continuous-listening session. Tells Claude to skip the
+    /// "anything else?" tail prompts and keep replies tight — the user
+    /// will just speak again when they want to.
+    private static let continuousSessionAddendum = """
+    you're in a continuous listening session right now. the user can ask multiple questions back-to-back without holding any button — voice-activity detection segments their speech automatically. keep replies very short (one or two sentences max — no exceptions) so you don't dominate the conversation. only elaborate if explicitly asked to. don't end with "anything else?" tail prompts or trailing suggestions — assume the user will speak again when they want to.
+    """
+
 
     private static let companionVoiceResponseSystemPrompt = """
     you're cue, a friendly always-on companion that lives in the user's menu bar. the user just spoke to you via push-to-talk and you can see their screen(s). your reply will be spoken aloud via text-to-speech, so write the way you'd actually talk. this is an ongoing conversation — you remember everything they've said before.
@@ -1012,9 +1141,19 @@ final class CompanionManager: ObservableObject {
                     (userPlaceholder: entry.userTranscript, assistantResponse: entry.assistantResponse)
                 }
 
+                // In a continuous session, append the hands-free addendum
+                // so Claude keeps replies extra short (no "anything else?"
+                // tail prompts, no elaboration unless asked).
+                let activeSystemPrompt: String = {
+                    if isContinuousSessionActive {
+                        return Self.companionVoiceResponseSystemPrompt + "\n\n" + Self.continuousSessionAddendum
+                    }
+                    return Self.companionVoiceResponseSystemPrompt
+                }()
+
                 let (fullResponseText, _) = try await claudeAPI.analyzeImageStreaming(
                     images: labeledImages,
-                    systemPrompt: Self.companionVoiceResponseSystemPrompt,
+                    systemPrompt: activeSystemPrompt,
                     conversationHistory: historyForAPI,
                     userPrompt: transcript,
                     enableWebSearch: isWebSearchEnabled,
