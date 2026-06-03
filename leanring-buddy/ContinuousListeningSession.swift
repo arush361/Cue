@@ -95,7 +95,15 @@ final class ContinuousListeningSession {
         // `reportResults: true` is required to receive any Result from
         // SpeechDetector's `results` stream. Default `init()` runs the
         // VAD silently — we need the events for segmentation.
-        self.detector = SpeechDetector(detectionOptions: SpeechDetector.DetectionOptions(), reportResults: true)
+        //
+        // `.medium` is Apple's recommended sensitivity level. `.low` is
+        // more forgiving (won't cut off short pauses), `.high` is
+        // aggressive (might fragment a slow speaker). If users report
+        // bad VAD behavior, surface this as a setting later.
+        self.detector = SpeechDetector(
+            detectionOptions: SpeechDetector.DetectionOptions(sensitivityLevel: .medium),
+            reportResults: true
+        )
 
         self.analyzer = SpeechAnalyzer(modules: [transcriber, detector])
 
