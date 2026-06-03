@@ -39,6 +39,21 @@ final class LocalTTSClient: NSObject, BuddyTTSClient {
     /// we don't want to redo it for every utterance.
     private let bestAvailableSpeechVoice: AVSpeechSynthesisVoice?
 
+    /// User-picked voice identifier from the menu bar panel. `nil` means
+    /// fall back to `bestAvailableSpeechVoice`. Settable so the picker
+    /// can swap voices live; lookups happen per-utterance so the value
+    /// always reflects the latest selection.
+    var preferredVoiceIdentifier: String? = nil
+
+    /// The voice each new utterance should use — preferred (if installed)
+    /// or the auto-picked best.
+    private var resolvedVoice: AVSpeechSynthesisVoice? {
+        if let id = preferredVoiceIdentifier, let v = AVSpeechSynthesisVoice(identifier: id) {
+            return v
+        }
+        return bestAvailableSpeechVoice
+    }
+
     override init() {
         self.bestAvailableSpeechVoice = Self.findBestAvailableEnglishVoice()
         super.init()
@@ -62,7 +77,7 @@ final class LocalTTSClient: NSObject, BuddyTTSClient {
 
         let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let speechUtterance = AVSpeechUtterance(string: trimmedText)
-        speechUtterance.voice = bestAvailableSpeechVoice
+        speechUtterance.voice = resolvedVoice
         // Slightly SLOWER than default for warmth — fast AVSpeech amplifies
         // its robotic-ness; a small drop reads as more natural / human.
         speechUtterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
@@ -146,13 +161,34 @@ final class LocalTTSClient: NSObject, BuddyTTSClient {
         }
     }
 
-    private static func qualityDescription(_ voiceQuality: AVSpeechSynthesisVoiceQuality) -> String {
+    static func qualityDescription(_ voiceQuality: AVSpeechSynthesisVoiceQuality) -> String {
         switch voiceQuality {
         case .premium: return "Premium"
         case .enhanced: return "Enhanced"
         case .default: return "Default"
         @unknown default: return "Unknown"
         }
+    }
+
+    /// Installed English voices above .default tier, sorted Premium →
+    /// Enhanced → (then by language preference). Used by the panel's
+    /// voice picker. Excludes legacy .default voices (they're robotic).
+    static func installedSelectableVoices() -> [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") }
+            .filter { $0.quality != .default }
+            .sorted { a, b in
+                if a.quality.rawValue != b.quality.rawValue {
+                    return a.quality.rawValue > b.quality.rawValue
+                }
+                return a.name < b.name
+            }
+    }
+
+    /// Human-readable display name for the picker:
+    /// "Ava (Premium · en-US)".
+    static func displayName(for voice: AVSpeechSynthesisVoice) -> String {
+        "\(voice.name) (\(qualityDescription(voice.quality)) · \(voice.language))"
     }
 
     /// Diagnostic dump of installed English voices above .default tier

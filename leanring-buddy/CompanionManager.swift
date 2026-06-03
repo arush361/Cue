@@ -187,7 +187,11 @@ final class CompanionManager: ObservableObject {
     /// installed system voice. Always available, no dependencies.
     /// See LocalTTSClient.swift.
     private lazy var localTTSClient: LocalTTSClient = {
-        return LocalTTSClient()
+        let client = LocalTTSClient()
+        // Seed with the user's saved voice pick if any. nil → keep
+        // the auto-pick best-available voice the client chose at init.
+        client.preferredVoiceIdentifier = selectedTTSVoiceIdentifier
+        return client
     }()
 
     /// Whether the user's voice responses are currently playing back
@@ -406,6 +410,23 @@ final class CompanionManager: ObservableObject {
         selectedModel = model
         UserDefaults.standard.set(model, forKey: "selectedClaudeModel")
         claudeAPI.model = model
+    }
+
+    /// The AVSpeechSynthesisVoice identifier the user picked in the menu
+    /// bar panel. `nil` means "use the auto-pick best installed voice"
+    /// (LocalTTSClient.findBestAvailableEnglishVoice). Persisted to
+    /// UserDefaults.
+    @Published var selectedTTSVoiceIdentifier: String? =
+        UserDefaults.standard.string(forKey: "selectedTTSVoiceIdentifier")
+
+    func setSelectedTTSVoice(identifier: String?) {
+        selectedTTSVoiceIdentifier = identifier
+        if let identifier {
+            UserDefaults.standard.set(identifier, forKey: "selectedTTSVoiceIdentifier")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "selectedTTSVoiceIdentifier")
+        }
+        localTTSClient.preferredVoiceIdentifier = identifier
     }
 
     /// User preference for whether the Cue cursor should be shown.

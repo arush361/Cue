@@ -36,87 +36,53 @@ struct CompanionPanelView: View {
                 .padding(.top, 16)
                 .padding(.horizontal, 16)
 
+            // Steady-state panel (onboarded + permissions granted):
+            // organized into three labeled sections. Daily-use controls
+            // visible without scrolling; setup-once controls (API key)
+            // collapsed by default.
             if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
+                Spacer().frame(height: 18)
 
-                modelPickerRow
-                    .padding(.horizontal, 16)
+                // MODEL & VOICE — how Cue responds.
+                panelSection(title: "MODEL & VOICE") {
+                    modelPickerRow
+                    voicePickerRow
+                }
+
+                Spacer().frame(height: 14)
+
+                // DISPLAY — what Cue looks like on screen.
+                panelSection(title: "DISPLAY") {
+                    cursorColorPickerRow
+                    showResponseSidePanelToggleRow
+                }
+
+                Spacer().frame(height: 14)
+
+                // PRIVACY & CONNECTION — what Cue sends + the API key.
+                panelSection(title: "PRIVACY & CONNECTION") {
+                    webSearchToggleRow
+                    anthropicAPIKeyRow
+                }
+
+                Spacer().frame(height: 16)
+
+                dmFarzaButton.padding(.horizontal, 16)
             }
 
-            // Cursor color picker — placed near the top of the panel so
-            // the user can change the cursor look right after seeing it.
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 14)
-
-                cursorColorPickerRow
-                    .padding(.horizontal, 16)
-            }
-
+            // Setup-time UI: permissions section (when something's missing)
+            // and the start button (when onboarding hasn't been completed).
             if !companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                settingsSection
-                    .padding(.horizontal, 16)
+                Spacer().frame(height: 16)
+                settingsSection.padding(.horizontal, 16)
             }
 
             if !companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                startButton
-                    .padding(.horizontal, 16)
+                Spacer().frame(height: 16)
+                startButton.padding(.horizontal, 16)
             }
 
-            // Show Cue toggle — hidden for now
-            // if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-            //     Spacer()
-            //         .frame(height: 16)
-            //
-            //     showCueCursorToggleRow
-            //         .padding(.horizontal, 16)
-            // }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                showResponseSidePanelToggleRow
-                    .padding(.horizontal, 16)
-            }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 12)
-
-                webSearchToggleRow
-                    .padding(.horizontal, 16)
-            }
-
-            // API key row — visible in the steady-state panel (post-onboarding,
-            // all permissions granted) so users can save / replace their
-            // Anthropic key from the menu bar at any time. Collapsed by default;
-            // see anthropicAPIKeyRow.
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 8)
-
-                anthropicAPIKeyRow
-                    .padding(.horizontal, 16)
-            }
-
-            if companionManager.hasCompletedOnboarding && companionManager.allPermissionsGranted {
-                Spacer()
-                    .frame(height: 16)
-
-                dmFarzaButton
-                    .padding(.horizontal, 16)
-            }
-
-            Spacer()
-                .frame(height: 12)
+            Spacer().frame(height: 12)
 
             Divider()
                 .background(DS.Colors.borderSubtle)
@@ -128,6 +94,21 @@ struct CompanionPanelView: View {
         }
         .frame(width: 320)
         .background(panelBackground)
+    }
+
+    /// Wraps a group of rows in a labeled section. Section header is
+    /// small uppercase semibold (matches the existing PERMISSIONS label
+    /// style at `settingsSection`). Rows inside get consistent spacing.
+    @ViewBuilder
+    private func panelSection<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(DS.Colors.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            content()
+        }
+        .padding(.horizontal, 16)
     }
 
     // MARK: - Header
@@ -924,7 +905,42 @@ struct CompanionPanelView: View {
                     .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
             )
         }
-        .padding(.vertical, 4)
+    }
+
+    /// Voice picker — uses a SwiftUI Picker in .menu style so all
+    /// installed Premium/Enhanced English voices fit comfortably even
+    /// when there are 10+. Selection binds to
+    /// CompanionManager.selectedTTSVoiceIdentifier (UserDefaults-backed,
+    /// hot-swaps the live voice in LocalTTSClient).
+    private var voicePickerRow: some View {
+        let voices = LocalTTSClient.installedSelectableVoices()
+        return HStack {
+            Text("Voice")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(DS.Colors.textSecondary)
+
+            Spacer()
+
+            Picker(
+                selection: Binding<String>(
+                    get: { companionManager.selectedTTSVoiceIdentifier ?? "auto" },
+                    set: { newValue in
+                        companionManager.setSelectedTTSVoice(identifier: newValue == "auto" ? nil : newValue)
+                    }
+                ),
+                label: EmptyView()
+            ) {
+                Text("Auto (best installed)").tag("auto")
+                Divider()
+                ForEach(voices, id: \.identifier) { voice in
+                    Text(LocalTTSClient.displayName(for: voice)).tag(voice.identifier)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .frame(maxWidth: 180)
+            .font(.system(size: 11))
+        }
     }
 
     private func modelOptionButton(label: String, modelID: String) -> some View {
