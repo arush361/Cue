@@ -279,6 +279,14 @@ final class CompanionManager: ObservableObject {
     /// overlapping audio between engines.
     private var streamingTTSConsumer: Task<Void, Never>?
 
+    /// Bumped every time a consumer starts and every time resetStreamingTTS
+    /// runs. The consumer captures its starting gen; the tail-grace cleanup
+    /// only un-mutes the mic + clears state if the gen still matches at
+    /// wake-up. Prevents the OLD consumer's tail-grace from undoing the
+    /// NEW consumer's mute (the bug that let Cue's TTS feed back into the
+    /// transcriber).
+    private var streamingTTSConsumerGeneration: Int = 0
+
     /// Min sentence length before we'll cut at a terminator. Prevents
     /// "Hi. there" from breaking after "Hi." which would feel choppy.
     private static let streamingTTSMinSentenceChars = 8
@@ -325,6 +333,8 @@ final class CompanionManager: ObservableObject {
 
     private func startStreamingTTSConsumerIfNeeded() {
         guard streamingTTSConsumer == nil else { return }
+        streamingTTSConsumerGeneration += 1
+        let myGen = streamingTTSConsumerGeneration
         streamingTTSConsumer = Task { @MainActor [weak self] in
             guard let self else { return }
             // Switch to .responding the moment the first audio is about
@@ -337,16 +347,27 @@ final class CompanionManager: ObservableObject {
             // this consumer so the speakers' echo doesn't get
             // transcribed as a fresh user utterance.
             self.buddyDictationManager.isMicMutedForOwnTTSPlayback = true
+            print("🔇 Mic muted for own TTS (gen=\(myGen))")
             while !Task.isCancelled, let sentence = self.streamingTTSQueue.first {
                 self.streamingTTSQueue.removeFirst()
                 await self.speakResponseThroughBestAvailableTTS(sentence)
             }
-            // Tail grace — speakers can echo for ~250ms after playback
-            // returns; keep the mic muted across that window so we
-            // don't pick up the trailing audio.
-            try? await Task.sleep(nanoseconds: 300_000_000)
+            // Tail grace — speakers can echo for several hundred ms
+            // after playback returns; keep the mic muted across that
+            // window so we don't pick up the trailing audio. 500ms is
+            // empirically safe on this hardware.
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            // Only un-mute if we're still the active consumer. A
+            // resetStreamingTTS (barge-in or new ask) bumps the
+            // generation; in that case the new consumer owns the
+            // flag and our tail must not touch it.
+            guard self.streamingTTSConsumerGeneration == myGen else {
+                print("🔁 Stale consumer (gen=\(myGen), current=\(self.streamingTTSConsumerGeneration)) — leaving mute alone")
+                return
+            }
             self.buddyDictationManager.isMicMutedForOwnTTSPlayback = false
             self.streamingTTSConsumer = nil
+            print("🔊 Mic un-muted after TTS (gen=\(myGen))")
         }
     }
 
@@ -358,9 +379,14 @@ final class CompanionManager: ObservableObject {
         streamingTTSConsumer = nil
         streamingTTSQueue.removeAll(keepingCapacity: true)
         streamingTTSCursor = 0
+        // Invalidate any tail-grace sleeping inside the old consumer
+        // so it doesn't wake up and un-mute the mic after the new
+        // consumer has already taken over.
+        streamingTTSConsumerGeneration += 1
         // Open the mic immediately on cancel/barge-in. If we leave the
         // mute on, the continuous-listening session would miss the
-        // first ~300ms of the user's new utterance.
+        // first ~300ms of the user's new utterance. A new consumer
+        // (if one is about to start) will re-mute within ~10ms.
         buddyDictationManager.isMicMutedForOwnTTSPlayback = false
     }
 
