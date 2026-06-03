@@ -22,7 +22,7 @@ enum CompanionVoiceState {
 }
 
 /// The four cursor colors the user can pick from in the menu bar panel.
-/// `blue` is the historical default that matches the original upstream-Clicky
+/// `blue` is the historical default that matches the original upstream
 /// look. The other three give the cursor a more personal feel without
 /// drifting off-brand.
 enum CompanionCursorColor: String, CaseIterable {
@@ -249,6 +249,21 @@ final class CompanionManager: ObservableObject {
         stopAllTTSPlayback()
     }
 
+    /// Full barge-in teardown: cancel the in-flight Claude response,
+    /// invalidate any chunks still arriving from it (via the generation
+    /// counter), and drain the TTS pipeline. Used when the user starts
+    /// speaking again during a continuous session — their new utterance
+    /// will fire a fresh Claude call once the next silence-flush hits.
+    func cancelInFlightResponseForBargeIn() {
+        currentResponseGeneration += 1
+        currentResponseTask?.cancel()
+        currentResponseTask = nil
+        resetStreamingTTS()
+        stopAllTTSPlayback()
+        streamingResponseText = ""
+        print("🛑 Barge-in: cancelled in-flight response (gen=\(currentResponseGeneration))")
+    }
+
     // MARK: - Streaming TTS (speak sentences as they arrive)
 
     /// Character index in the most recent streaming response past which
@@ -375,7 +390,10 @@ final class CompanionManager: ObservableObject {
 
         // Tear down any in-flight PTT response state first — entering
         // continuous mode mid-response would otherwise create a weird
-        // hybrid where the old response is still streaming.
+        // hybrid where the old response is still streaming. Bump the
+        // generation so any chunks still arriving from that cancelled
+        // call are dropped instead of leaking into the new session.
+        currentResponseGeneration += 1
         currentResponseTask?.cancel()
         resetStreamingTTS()
         stopAllTTSPlayback()
@@ -421,10 +439,13 @@ final class CompanionManager: ObservableObject {
                 },
                 onSpeechStarted: { [weak self] in
                     Task { @MainActor in
-                        // Barge-in: if Cue is currently speaking when the
-                        // user starts talking again, cut TTS so the user
-                        // isn't fighting it.
-                        self?.muteCurrentTTSPlayback()
+                        // Barge-in: if Cue is mid-response when the user
+                        // speaks again, cancel the Claude call AND drop
+                        // any chunks still arriving from it AND drain
+                        // TTS. The same continuous session keeps
+                        // listening; the user's new utterance fires a
+                        // fresh Claude call on the next silence-flush.
+                        self?.cancelInFlightResponseForBargeIn()
                     }
                 },
                 onError: { [weak self] error in
@@ -509,6 +530,14 @@ final class CompanionManager: ObservableObject {
     /// speaks again so a new response can begin immediately.
     private var currentResponseTask: Task<Void, Never>?
 
+    /// Bumped every time we start a new response and every time we
+    /// barge-in cancel an in-flight one. The onTextChunk callback
+    /// captures its starting generation; any chunk arriving with a
+    /// stale generation is dropped (ClaudeAPI doesn't honor Task
+    /// cancellation, so post-cancel chunks would otherwise still
+    /// re-fill the TTS pipeline).
+    private var currentResponseGeneration: Int = 0
+
     private var shortcutTransitionCancellable: AnyCancellable?
     private var voiceStateCancellable: AnyCancellable?
     private var audioPowerCancellable: AnyCancellable?
@@ -554,6 +583,23 @@ final class CompanionManager: ObservableObject {
         localTTSClient.preferredVoiceIdentifier = identifier
     }
 
+    /// Stable unique ID of the microphone the user picked in the menu bar
+    /// panel. `nil` means "follow the system default input device". Persisted
+    /// to UserDefaults and applied to the dictation engine at launch and on
+    /// every change.
+    @Published var selectedMicrophoneDeviceUID: String? =
+        UserDefaults.standard.string(forKey: "selectedMicrophoneDeviceUID")
+
+    func setSelectedMicrophone(uniqueID: String?) {
+        selectedMicrophoneDeviceUID = uniqueID
+        if let uniqueID {
+            UserDefaults.standard.set(uniqueID, forKey: "selectedMicrophoneDeviceUID")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "selectedMicrophoneDeviceUID")
+        }
+        buddyDictationManager.setPreferredInputDeviceUniqueID(uniqueID)
+    }
+
     /// User preference for whether the Cue cursor should be shown.
     /// When toggled off, the overlay is hidden and push-to-talk is disabled.
     /// Persisted to UserDefaults so the choice survives app restarts.
@@ -564,14 +610,8 @@ final class CompanionManager: ObservableObject {
     /// reset by the rename.
     @Published var isCueCursorEnabled: Bool = {
         let userDefaults = UserDefaults.standard
-        // New key takes priority.
         if userDefaults.object(forKey: "isCueCursorEnabled") != nil {
             return userDefaults.bool(forKey: "isCueCursorEnabled")
-        }
-        // Legacy upstream-Clicky key — read once so existing installs
-        // don't lose their preference after the rename.
-        if userDefaults.object(forKey: "isClickyCursorEnabled") != nil {
-            return userDefaults.bool(forKey: "isClickyCursorEnabled")
         }
         return true
     }()
@@ -635,7 +675,7 @@ final class CompanionManager: ObservableObject {
     /// User-selected cursor color. Drives the blue/purple/green/pink
     /// rendering of the triangle cursor, waveform, spinner, and
     /// element-arrival bubble. Persisted to UserDefaults via its raw
-    /// String value; default is blue (the original upstream-Clicky look).
+    /// String value; default is blue (the original upstream look).
     @Published var selectedCursorColor: CompanionCursorColor = {
         let storedRawValue = UserDefaults.standard.string(forKey: "selectedCursorColor")
         return storedRawValue.flatMap(CompanionCursorColor.init(rawValue:)) ?? .blue
@@ -693,6 +733,9 @@ final class CompanionManager: ObservableObject {
         bindVoiceStateObservation()
         bindAudioPowerLevel()
         bindShortcutTransitions()
+        // Apply the persisted microphone choice so capture uses the user's
+        // selected input device from the first recording of this launch.
+        buddyDictationManager.setPreferredInputDeviceUniqueID(selectedMicrophoneDeviceUID)
         // Resolve the Anthropic key (Keychain → env var → proxy) and seed
         // claudeAPI before anything triggers it. Also kicks the TLS warmup
         // handshake so it's done before the onboarding demo at ~40s.
@@ -1129,6 +1172,12 @@ final class CompanionManager: ObservableObject {
         resetStreamingTTS()
         stopAllTTSPlayback()
 
+        // Bump the generation so any chunks still arriving from a
+        // previous response (which ClaudeAPI keeps streaming after
+        // cancel) are dropped by the onTextChunk guard below.
+        currentResponseGeneration += 1
+        let myGen = currentResponseGeneration
+
         currentResponseTask = Task {
             // Stay in processing (spinner) state — no streaming text displayed
             voiceState = .processing
@@ -1190,6 +1239,13 @@ final class CompanionManager: ObservableObject {
                         // — only the display copy is sanitized here.
                         Task { @MainActor in
                             guard let self else { return }
+                            // Generation gate: if a barge-in (or a new
+                            // call) bumped the generation since we
+                            // started, the user no longer cares about
+                            // these chunks — drop them so they don't
+                            // re-fill the TTS pipeline or overwrite
+                            // newer streamingResponseText.
+                            guard self.currentResponseGeneration == myGen else { return }
                             var displayText = cumulativeStreamedText
                             if let pointTagStartRange = displayText.range(of: "[POINT") {
                                 displayText = String(displayText[..<pointTagStartRange.lowerBound])
@@ -1209,6 +1265,11 @@ final class CompanionManager: ObservableObject {
                 )
 
                 guard !Task.isCancelled else { return }
+                // Also bail if barge-in (or a newer call) advanced the
+                // generation while we awaited — the rest of this
+                // function would otherwise mutate streamingResponseText
+                // / conversationHistory with a stale response.
+                guard currentResponseGeneration == myGen else { return }
 
                 // Parse the [POINT:...] tag from Claude's response
                 let parseResult = Self.parsePointingCoordinates(from: fullResponseText)

@@ -68,13 +68,18 @@ final class ContinuousListeningSession {
     private let requiredAudioFormat: AVAudioFormat
     private var audioConverter: AVAudioConverter?
 
-    /// The whole transcript the analyzer has produced since the start
-    /// of this session. We slice it on each segment finalize.
+    /// The latest transcript text from `DictationTranscriber`. Some
+    /// presets append across utterances ("hello world. what time"),
+    /// some reset per utterance ("what time" after "hello world" was
+    /// already flushed). We treat both transparently by comparing this
+    /// string against `lastFlushedTranscript` on each flush.
     private var fullTranscript: String = ""
 
-    /// Char index in `fullTranscript` past which we haven't yet flushed.
-    /// Advances on every onSegmentFinalized fire.
-    private var lastFlushedCursor: Int = 0
+    /// Snapshot of `fullTranscript` at the moment of the last flush.
+    /// On the next flush we emit either the tail (if the new transcript
+    /// is a prefix-extension of this snapshot — append-mode transcriber)
+    /// or the whole new transcript (if not — reset-mode transcriber).
+    private var lastFlushedTranscript: String = ""
 
     /// Tracks the VAD state so we don't fire onSpeechStarted twice in a
     /// row, and so we know whether a silence event corresponds to an
@@ -92,7 +97,7 @@ final class ContinuousListeningSession {
     /// the case where SpeechDetector.results doesn't fire (which has
     /// been observed on macOS 26 betas).
     private var silenceTimer: Timer?
-    private static let silenceFinalizeSeconds: TimeInterval = 1.2
+    private static let silenceFinalizeSeconds: TimeInterval = 0.7
 
     // MARK: - Init / lifecycle
 
@@ -258,14 +263,22 @@ final class ContinuousListeningSession {
     // MARK: - Helpers
 
     private func flushSegmentIfAny() {
-        guard lastFlushedCursor < fullTranscript.count else { return }
-        let slice = String(fullTranscript.dropFirst(lastFlushedCursor))
-        let trimmed = slice.trimmingCharacters(in: .whitespacesAndNewlines)
-        lastFlushedCursor = fullTranscript.count
-        if !trimmed.isEmpty {
-            print("📤 ContinuousListening: flushing segment: \"\(trimmed)\"")
-            onSegmentFinalized(trimmed)
+        let current = fullTranscript
+        let newText: String
+        if !lastFlushedTranscript.isEmpty && current.hasPrefix(lastFlushedTranscript) {
+            // Append-mode transcriber: emit only the tail since last flush.
+            newText = String(current.dropFirst(lastFlushedTranscript.count))
+        } else {
+            // Reset-mode transcriber (or first flush, or transcriber
+            // reset to a different prefix mid-session): the entire
+            // current transcript is the new segment.
+            newText = current
         }
+        let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        lastFlushedTranscript = current
+        print("📤 ContinuousListening: flushing segment: \"\(trimmed)\"")
+        onSegmentFinalized(trimmed)
     }
 
     /// Restart the silence timer. Each new transcriber partial pushes
