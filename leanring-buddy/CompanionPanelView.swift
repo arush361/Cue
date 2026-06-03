@@ -907,13 +907,22 @@ struct CompanionPanelView: View {
         }
     }
 
-    /// Voice picker — uses a SwiftUI Picker in .menu style so all
-    /// installed Premium/Enhanced English voices fit comfortably even
-    /// when there are 10+. Selection binds to
-    /// CompanionManager.selectedTTSVoiceIdentifier (UserDefaults-backed,
-    /// hot-swaps the live voice in LocalTTSClient).
+    /// Voice picker. Uses a SwiftUI `Menu` (not `Picker`) so we can give
+    /// the trigger label a visible chrome — `Picker(.menu)` on macOS dark
+    /// panels renders as a near-invisible plain-text button. The trigger
+    /// matches the model picker's rounded-rect + border style and shows
+    /// the currently-selected voice name plus a chevron so it reads as
+    /// "tap me." Selection binds to `selectedTTSVoiceIdentifier`
+    /// (UserDefaults-backed, hot-swaps the live voice in LocalTTSClient).
     private var voicePickerRow: some View {
         let voices = LocalTTSClient.installedSelectableVoices()
+        let currentLabel: String = {
+            guard let id = companionManager.selectedTTSVoiceIdentifier,
+                  let voice = voices.first(where: { $0.identifier == id }) else {
+                return "Auto"
+            }
+            return voice.name
+        }()
         return HStack {
             Text("Voice")
                 .font(.system(size: 13, weight: .medium))
@@ -921,25 +930,52 @@ struct CompanionPanelView: View {
 
             Spacer()
 
-            Picker(
-                selection: Binding<String>(
-                    get: { companionManager.selectedTTSVoiceIdentifier ?? "auto" },
-                    set: { newValue in
-                        companionManager.setSelectedTTSVoice(identifier: newValue == "auto" ? nil : newValue)
+            Menu {
+                Button(action: { companionManager.setSelectedTTSVoice(identifier: nil) }) {
+                    HStack {
+                        Text("Auto (best installed)")
+                        if companionManager.selectedTTSVoiceIdentifier == nil {
+                            Image(systemName: "checkmark")
+                        }
                     }
-                ),
-                label: EmptyView()
-            ) {
-                Text("Auto (best installed)").tag("auto")
+                }
                 Divider()
                 ForEach(voices, id: \.identifier) { voice in
-                    Text(LocalTTSClient.displayName(for: voice)).tag(voice.identifier)
+                    Button(action: { companionManager.setSelectedTTSVoice(identifier: voice.identifier) }) {
+                        HStack {
+                            Text(LocalTTSClient.displayName(for: voice))
+                            if companionManager.selectedTTSVoiceIdentifier == voice.identifier {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
                 }
+            } label: {
+                HStack(spacing: 6) {
+                    Text(currentLabel)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(DS.Colors.textPrimary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(DS.Colors.textTertiary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .stroke(DS.Colors.borderSubtle, lineWidth: 0.5)
+                )
+                .contentShape(Rectangle())
             }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(maxWidth: 180)
-            .font(.system(size: 11))
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
         }
     }
 
