@@ -68,17 +68,27 @@ final class ContinuousListeningSession {
     private let requiredAudioFormat: AVAudioFormat
     private var audioConverter: AVAudioConverter?
 
-    /// The latest transcript text from `DictationTranscriber`. Some
-    /// presets append across utterances ("hello world. what time"),
-    /// some reset per utterance ("what time" after "hello world" was
-    /// already flushed). We treat both transparently by comparing this
-    /// string against `lastFlushedTranscript` on each flush.
+    /// The latest text from `DictationTranscriber` — what the user
+    /// most recently said as the transcriber currently sees it. Used
+    /// for UI live-preview only; flush uses `bestTranscriptForCurrentSegment`.
     private var fullTranscript: String = ""
 
-    /// Snapshot of `fullTranscript` at the moment of the last flush.
-    /// On the next flush we emit either the tail (if the new transcript
-    /// is a prefix-extension of this snapshot — append-mode transcriber)
-    /// or the whole new transcript (if not — reset-mode transcriber).
+    /// The longest stable transcript we've seen since the last flush.
+    /// `DictationTranscriber` sometimes shrinks its own output between
+    /// the final partial and the per-utterance reset (e.g.
+    ///   "Hey, how can I find the stock price of Nvidia?"
+    ///   "Hey, how can I find the stock price of Nvidia"   ← drops ?
+    ///   "?"                                                ← resets
+    /// ). If we flushed `fullTranscript` at silence we'd lose the
+    /// real utterance and emit just "?". Tracking the LONGEST text
+    /// in the same trajectory (where one is a prefix of the other)
+    /// gives us the user's actual question to flush.
+    private var bestTranscriptForCurrentSegment: String = ""
+
+    /// Snapshot of the transcript that was actually flushed last. Used
+    /// to dedupe in accumulator-mode transcribers — if the new "best"
+    /// text starts with this, we emit only the tail. Reset (cleared)
+    /// after each flush via assignment of the current best.
     private var lastFlushedTranscript: String = ""
 
     /// Tracks the VAD state so we don't fire onSpeechStarted twice in a
@@ -144,9 +154,14 @@ final class ContinuousListeningSession {
 
         try await analyzer.start(inputSequence: bufferStream)
 
-        // (3) Drain transcriber results — every new partial appends to
-        // fullTranscript. The detector task uses fullTranscript to
-        // compute the slice on finalize.
+        // (3) Drain transcriber results. We track two strings:
+        //   - fullTranscript: latest text from the transcriber (UI preview).
+        //   - bestTranscriptForCurrentSegment: longest stable text in the
+        //     same prefix-trajectory; this is what we flush.
+        // Detecting a hard reset (new text shares NO prefix with best)
+        // is also an end-of-utterance signal — flush immediately so we
+        // don't wait the full silence window when the transcriber has
+        // clearly moved on to a new utterance.
         transcriberTask = Task { [weak self] in
             guard let self else { return }
             do {
@@ -155,7 +170,28 @@ final class ContinuousListeningSession {
                     self.fullTranscript = text
                     print("🎙️ ContinuousListening transcriber: \"\(text)\"")
                     self.onTranscriptUpdate(text)
-                    await MainActor.run { self.scheduleSilenceFlush() }
+
+                    let best = self.bestTranscriptForCurrentSegment
+                    let isOnSameTrajectory = best.isEmpty
+                        || text.hasPrefix(best)
+                        || best.hasPrefix(text)
+
+                    if isOnSameTrajectory {
+                        // Take whichever is longer — keep the best when
+                        // the transcriber shrinks its own output.
+                        if text.count > best.count {
+                            self.bestTranscriptForCurrentSegment = text
+                        }
+                        await MainActor.run { self.scheduleSilenceFlush() }
+                    } else {
+                        // True reset: new text doesn't share a prefix
+                        // with what we'd been tracking. Flush the best
+                        // we had now, then start tracking the new text.
+                        print("🔀 ContinuousListening: reset detected — flushing best so far")
+                        await MainActor.run { self.flushSegmentIfAny() }
+                        self.bestTranscriptForCurrentSegment = text
+                        await MainActor.run { self.scheduleSilenceFlush() }
+                    }
                 }
                 print("🎙️ ContinuousListening transcriber: stream ended")
             } catch {
@@ -267,26 +303,29 @@ final class ContinuousListeningSession {
     // MARK: - Helpers
 
     private func flushSegmentIfAny() {
-        let current = fullTranscript
+        let current = bestTranscriptForCurrentSegment
+        guard !current.isEmpty else { return }
         let newText: String
         if !lastFlushedTranscript.isEmpty && current.hasPrefix(lastFlushedTranscript) {
-            // Append-mode transcriber: emit only the tail since last flush.
+            // Append-mode transcriber: emit only the tail past the
+            // already-flushed portion.
             newText = String(current.dropFirst(lastFlushedTranscript.count))
         } else {
             // Reset-mode transcriber (or first flush, or transcriber
             // reset to a different prefix mid-session): the entire
-            // current transcript is the new segment.
+            // current best is the new segment.
             newText = current
         }
         let trimmed = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Always advance state, even if we skip — otherwise we'd
+        // re-flush the same accumulated text on every silence tick.
+        lastFlushedTranscript = current
+        bestTranscriptForCurrentSegment = ""
         guard !trimmed.isEmpty else { return }
         // Skip junk fragments: trailing punctuation only ("?"), or
         // less than 2 word-ish characters. These come from the
         // transcriber's per-utterance reset emitting just the trailing
-        // punctuation of the prior utterance, and sending them to
-        // Claude would burn a turn on "?". Always advance the cursor
-        // though, so we don't re-flush the same junk forever.
-        lastFlushedTranscript = current
+        // punctuation of the prior utterance.
         let alphanumericCount = trimmed.unicodeScalars.lazy.filter { CharacterSet.alphanumerics.contains($0) }.count
         guard alphanumericCount >= 2 else {
             print("⏭️ ContinuousListening: skipping trivial segment: \"\(trimmed)\"")
