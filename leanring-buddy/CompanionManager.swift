@@ -226,8 +226,125 @@ final class CompanionManager: ObservableObject {
     /// Stops any currently-playing TTS audio. Exposed publicly so the
     /// response side panel's mute button can silence Cue mid-response.
     /// Doesn't affect the streamed text on screen — only the audio.
+    /// Also tears down the streaming-TTS queue so any pending sentences
+    /// don't sneak through after the mute.
     func muteCurrentTTSPlayback() {
+        resetStreamingTTS()
         stopAllTTSPlayback()
+    }
+
+    // MARK: - Streaming TTS (speak sentences as they arrive)
+
+    /// Character index in the most recent streaming response past which
+    /// no sentence has been queued for TTS yet. Reset on every new ask.
+    private var streamingTTSCursor: Int = 0
+
+    /// Sentences waiting to be spoken in order. Mutated only on @MainActor.
+    private var streamingTTSQueue: [String] = []
+
+    /// Single consumer that drains `streamingTTSQueue` sequentially.
+    /// Awaiting each `speakResponseThroughBestAvailableTTS` ensures
+    /// sentence N finishes playing before sentence N+1 starts — no
+    /// overlapping audio between engines.
+    private var streamingTTSConsumer: Task<Void, Never>?
+
+    /// Min sentence length before we'll cut at a terminator. Prevents
+    /// "Hi. there" from breaking after "Hi." which would feel choppy.
+    private static let streamingTTSMinSentenceChars = 8
+
+    /// Examine the cumulative streaming text, find any newly-complete
+    /// sentences past `streamingTTSCursor`, append them to the queue,
+    /// and start the consumer Task if it isn't already running.
+    ///
+    /// Called from the streaming text-chunk callback after `[POINT...]`
+    /// stripping, so the buffer never sees the raw coordinate tag.
+    private func enqueueStreamingTTSChunks(_ cumulative: String) {
+        let cumulativeChars = Array(cumulative)
+        var index = streamingTTSCursor
+
+        while index < cumulativeChars.count {
+            guard let end = nextSentenceEnd(in: cumulativeChars, from: index) else { break }
+            let sentenceChars = cumulativeChars[streamingTTSCursor...end]
+            let sentence = String(sentenceChars).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sentence.isEmpty {
+                streamingTTSQueue.append(sentence)
+            }
+            streamingTTSCursor = end + 1
+            index = streamingTTSCursor
+        }
+
+        startStreamingTTSConsumerIfNeeded()
+    }
+
+    /// On stream end, flush any trailing fragment that didn't end in a
+    /// terminator (e.g. "...with rate limit tests").
+    private func flushStreamingTTSFinalFragment(_ finalCleanedText: String) {
+        let finalChars = Array(finalCleanedText)
+        guard streamingTTSCursor < finalChars.count else {
+            startStreamingTTSConsumerIfNeeded()
+            return
+        }
+        let tail = String(finalChars[streamingTTSCursor...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        streamingTTSCursor = finalChars.count
+        if !tail.isEmpty {
+            streamingTTSQueue.append(tail)
+        }
+        startStreamingTTSConsumerIfNeeded()
+    }
+
+    private func startStreamingTTSConsumerIfNeeded() {
+        guard streamingTTSConsumer == nil else { return }
+        streamingTTSConsumer = Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Switch to .responding the moment the first audio is about
+            // to play so the spinner doesn't sit on .processing during
+            // the gap between text arriving and audio starting.
+            if !self.streamingTTSQueue.isEmpty && self.voiceState == .processing {
+                self.voiceState = .responding
+            }
+            while !Task.isCancelled, let sentence = self.streamingTTSQueue.first {
+                self.streamingTTSQueue.removeFirst()
+                await self.speakResponseThroughBestAvailableTTS(sentence)
+            }
+            self.streamingTTSConsumer = nil
+        }
+    }
+
+    /// Tear down all streaming-TTS state. Called on new push-to-talk, on
+    /// mute, and on panel close so a follow-up doesn't inherit half-spoken
+    /// sentences from the prior response.
+    private func resetStreamingTTS() {
+        streamingTTSConsumer?.cancel()
+        streamingTTSConsumer = nil
+        streamingTTSQueue.removeAll(keepingCapacity: true)
+        streamingTTSCursor = 0
+    }
+
+    /// Find the next sentence-end index >= `from`, requiring the
+    /// sentence to be at least `streamingTTSMinSentenceChars` long and
+    /// the terminator to be followed by whitespace or end-of-input
+    /// (so "Mr. Smith" doesn't cut after "Mr.").
+    /// Also splits on `\n\n`.
+    private func nextSentenceEnd(in chars: [Character], from start: Int) -> Int? {
+        var i = start
+        while i < chars.count {
+            let ch = chars[i]
+            // Paragraph break — split before the second newline.
+            if ch == "\n", i + 1 < chars.count, chars[i + 1] == "\n",
+               (i - start) >= Self.streamingTTSMinSentenceChars {
+                return i
+            }
+            if (ch == "." || ch == "!" || ch == "?"),
+               (i - start) >= Self.streamingTTSMinSentenceChars {
+                // Terminator must be followed by whitespace or end.
+                let next = i + 1 < chars.count ? chars[i + 1] : " "
+                if next == " " || next == "\n" || next == "\t" || i + 1 >= chars.count {
+                    return i
+                }
+            }
+            i += 1
+        }
+        return nil
     }
 
     /// Re-speaks the latest assistant response from the beginning. Used
@@ -733,6 +850,7 @@ final class CompanionManager: ObservableObject {
 
             // Cancel any in-progress response and TTS from a previous utterance
             currentResponseTask?.cancel()
+            resetStreamingTTS()
             stopAllTTSPlayback()
             clearDetectedElementLocation()
 
@@ -832,6 +950,7 @@ final class CompanionManager: ObservableObject {
     /// the buddy to fly to that element on screen.
     private func sendTranscriptToClaudeWithScreenshot(transcript: String) {
         currentResponseTask?.cancel()
+        resetStreamingTTS()
         stopAllTTSPlayback()
 
         currentResponseTask = Task {
@@ -894,6 +1013,11 @@ final class CompanionManager: ObservableObject {
                             if self.showResponseSidePanelPreference {
                                 self.isResponsePanelVisible = true
                             }
+                            // Feed the streaming-TTS buffer. Any newly-complete
+                            // sentences get queued and the consumer Task starts
+                            // playing them immediately — no waiting for the
+                            // full response to finish streaming.
+                            self.enqueueStreamingTTSChunks(displayText)
                         }
                     }
                 )
@@ -979,16 +1103,16 @@ final class CompanionManager: ObservableObject {
 
                 CueAnalytics.trackAIResponseReceived(response: spokenText)
 
-                // Play the response via on-device TTS. Prefers Kokoro (neural)
-                // when ready, falls back to AVSpeechSynthesizer if Kokoro isn't
-                // initialized yet or fails. Keep the spinner (processing state)
-                // until the audio actually starts playing, then switch to responding.
+                // Flush any trailing sentence fragment past the last
+                // terminator into the streaming-TTS queue (the streaming
+                // consumer already started speaking earlier sentences).
+                // We do NOT re-speak the whole `spokenText` here — that
+                // would double up on audio. Existing behavior of
+                // `voiceState = .responding` is preserved; the consumer
+                // also sets it once the first sentence begins playing.
                 if !spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     do {
-                        await speakResponseThroughBestAvailableTTS(spokenText)
-                        // The TTS path returns after playback has started; if
-                        // neither engine could play, we still flip to .responding
-                        // briefly so the cursor doesn't appear stuck.
+                        flushStreamingTTSFinalFragment(spokenText)
                         voiceState = .responding
                     } catch {
                         CueAnalytics.trackTTSError(error: error.localizedDescription)
