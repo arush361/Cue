@@ -23,6 +23,20 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
     /// waiting for the async dictation state pipeline to catch up.
     @Published private(set) var isShortcutCurrentlyPressed = false
 
+    // MARK: - Double-tap detection
+    //
+    // We watch for two quick press-release cycles in rapid succession
+    // (each "tap" is a hold of less than `maxTapHoldSeconds`; the gap
+    // between the first release and the second press must be less than
+    // `maxBetweenTapsSeconds`). When the heuristic matches on the
+    // second `.pressed`, we emit `.doublePressActivation` instead of
+    // `.pressed` so CompanionManager can route it to the continuous-
+    // session enter/exit toggle without triggering normal PTT.
+    private var lastPressedAt: Date?
+    private var lastReleasedAt: Date?
+    private static let maxTapHoldSeconds: TimeInterval = 0.300
+    private static let maxBetweenTapsSeconds: TimeInterval = 0.400
+
     deinit {
         stop()
     }
@@ -120,11 +134,42 @@ final class GlobalPushToTalkShortcutMonitor: ObservableObject {
         case .none:
             break
         case .pressed:
+            let now = Date()
+            // Detect "tap, then this press" — the previous cycle was a
+            // brief tap AND the gap since release is small. If yes,
+            // promote to `.doublePressActivation` instead of firing a
+            // regular `.pressed` (which would kick off normal PTT).
+            let wasRecentTap: Bool
+            if let lastPressed = lastPressedAt, let lastReleased = lastReleasedAt {
+                let lastHold = lastReleased.timeIntervalSince(lastPressed)
+                let gap = now.timeIntervalSince(lastReleased)
+                wasRecentTap = lastHold >= 0
+                    && lastHold < Self.maxTapHoldSeconds
+                    && gap >= 0
+                    && gap < Self.maxBetweenTapsSeconds
+            } else {
+                wasRecentTap = false
+            }
+            lastPressedAt = now
             isShortcutCurrentlyPressed = true
-            shortcutTransitionPublisher.send(.pressed)
+            if wasRecentTap {
+                // Clear the cached tap so a third quick press doesn't
+                // re-fire activation immediately afterward.
+                lastReleasedAt = nil
+                lastPressedAt = nil
+                shortcutTransitionPublisher.send(.doublePressActivation)
+            } else {
+                shortcutTransitionPublisher.send(.pressed)
+            }
         case .released:
+            lastReleasedAt = Date()
             isShortcutCurrentlyPressed = false
             shortcutTransitionPublisher.send(.released)
+        case .doublePressActivation:
+            // The underlying transition function never emits this case;
+            // it's synthesized in the .pressed branch above. Listed for
+            // exhaustiveness.
+            break
         }
 
         return Unmanaged.passUnretained(event)
